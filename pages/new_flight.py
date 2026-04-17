@@ -173,34 +173,36 @@ def render():
     # Dynamic Events                                                        #
     # ------------------------------------------------------------------ #
     st.subheader("Events")
-    st.caption(
-        "Add one row per event type / condition combination. "
-        "Leave empty if no events to record."
-    )
 
-    rows_to_remove = []
-    for rid in st.session_state.nf_events:
-        with st.container(border=True):
-            top = st.columns(2)
-            top[0].selectbox("Event Type", EVENT_TYPES, key=f"nf_et_{rid}")
-            top[1].selectbox("Day / Night", PERIODS,    key=f"nf_ep_{rid}")
-            bot = st.columns([1, 2, 1])
-            bot[0].number_input("Qty", min_value=1, max_value=99, value=1, key=f"nf_eq_{rid}")
-            bot[1].selectbox("Method", METHODS, key=f"nf_em_{rid}")
-            bot[2].markdown("<div style='padding-top:1.85rem'>", unsafe_allow_html=True)
-            if bot[2].button("✕ Remove", key=f"nf_del_{rid}", use_container_width=True):
-                rows_to_remove.append(rid)
-            bot[2].markdown("</div>", unsafe_allow_html=True)
+    with st.container(border=True):
+        st.caption(
+            "Add one card per event type / condition combination. "
+            "Leave empty if no events to record."
+        )
 
-    for rid in rows_to_remove:
-        st.session_state.nf_events.remove(rid)
-        st.rerun()
+        rows_to_remove = []
+        for rid in st.session_state.nf_events:
+            with st.container(border=True):
+                top = st.columns(2)
+                top[0].selectbox("Event Type", EVENT_TYPES, key=f"nf_et_{rid}")
+                top[1].selectbox("Day / Night", PERIODS,    key=f"nf_ep_{rid}")
 
-    if st.button("＋ Add Event Row"):
-        new_id = st.session_state.nf_event_ctr
-        st.session_state.nf_events.append(new_id)
-        st.session_state.nf_event_ctr += 1
-        st.rerun()
+                bot = st.columns([1, 2, 1])
+                bot[0].number_input("Qty", min_value=1, max_value=99, value=1, key=f"nf_eq_{rid}")
+                bot[1].selectbox("Method", METHODS, key=f"nf_em_{rid}")
+                if bot[2].button("✕", key=f"nf_del_{rid}", use_container_width=True,
+                                 help="Remove this event"):
+                    rows_to_remove.append(rid)
+
+        for rid in rows_to_remove:
+            st.session_state.nf_events.remove(rid)
+            st.rerun()
+
+        if st.button("＋ Add Event", use_container_width=True):
+            new_id = st.session_state.nf_event_ctr
+            st.session_state.nf_events.append(new_id)
+            st.session_state.nf_event_ctr += 1
+            st.rerun()
 
     st.divider()
 
