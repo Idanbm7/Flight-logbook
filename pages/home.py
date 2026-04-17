@@ -1,44 +1,36 @@
 """
 pages/home.py — Home screen.
-Features: permanent Heron-1.jpg background, semi-transparent overlay, HUD-style stats panel.
-All data access is wrapped in try/except so no exception ever surfaces to the UI.
+Layout: title header → brightened Heron-1 image → quick-action buttons → stats → recent activity.
 """
 
 import os
-import base64
 import html as _html
 from datetime import date
 
 import streamlit as st
 
-# ---------------------------------------------------------------------------
-# Paths
-# ---------------------------------------------------------------------------
 _ROOT     = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 _BG_IMAGE = os.path.join(_ROOT, "Heron1.jpg")
 
 
-# ---------------------------------------------------------------------------
-# Image helper
-# ---------------------------------------------------------------------------
-
-def _load_b64(path: str) -> tuple[str, str]:
-    """Return (base64_string, mime_type) or ('', '') on any failure."""
+def _load_brightened(path: str, factor: float = 1.5):
+    """Return a brightness-enhanced PIL Image, or None on failure."""
     try:
-        ext  = os.path.splitext(path)[1].lower()
-        mime = "image/png" if ext == ".png" else "image/jpeg"
-        with open(path, "rb") as fh:
-            return base64.b64encode(fh.read()).decode(), mime
+        from PIL import Image, ImageEnhance
+    except ImportError:
+        import subprocess, sys
+        subprocess.check_call(
+            [sys.executable, "-m", "pip", "install", "Pillow"],
+            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+        )
+        from PIL import Image, ImageEnhance
+    try:
+        return ImageEnhance.Brightness(Image.open(path)).enhance(factor)
     except Exception:
-        return "", ""
+        return None
 
-
-# ---------------------------------------------------------------------------
-# HUD card builder
-# ---------------------------------------------------------------------------
 
 def _hud_card(label: str, value: str, accent: str = "#00d4ff") -> str:
-    """Return HTML for a single HUD-style stat card."""
     return (
         f'<div style="'
         f'background:rgba(2,12,30,0.82);'
@@ -70,15 +62,10 @@ def _hud_grid(cards_html: str) -> str:
     )
 
 
-# ---------------------------------------------------------------------------
-# Main render
-# ---------------------------------------------------------------------------
-
 def render():
-    # ---- safe imports ----
     try:
         from database import get_user_stats, get_recent_flights, get_home_display_prefs
-        from utils import minutes_to_hhmm
+        from utils import minutes_to_hhmm, format_date_eu
     except Exception as exc:
         st.error(f"Module load error: {exc}")
         return
@@ -87,42 +74,27 @@ def render():
     if not user:
         return
 
-    username = user.get("username", "Pilot")
-    today    = date.today().strftime("%A, %B %d, %Y")
-
-    # ================================================================== #
-    # 1 ▸  HERO BANNER  (permanent Heron-1.jpg background)                #
-    # ================================================================== #
-    b64, mime = _load_b64(_BG_IMAGE)
-    if b64:
-        bg_css = (
-            f"background-image:"
-            f"linear-gradient(rgba(3,10,24,0.74),rgba(3,10,24,0.80)),"
-            f"url('data:{mime};base64,{b64}');"
-            f"background-size:cover;background-position:center;"
-        )
-    else:
-        bg_css = (
-            "background:linear-gradient("
-            "135deg,#060d1b 0%,#0d2035 45%,#0a2a40 100%);"
-        )
-
+    username  = user.get("username", "Pilot")
+    today     = date.today().strftime("%A, %B %d, %Y")
     safe_user = _html.escape(username.upper())
     safe_date = _html.escape(today)
 
+    # ================================================================== #
+    # 1 ▸  HEADER / TITLE                                                 #
+    # ================================================================== #
     st.markdown(
         f"""
         <div style="
-            {bg_css}
+            background:linear-gradient(135deg,#060d1b 0%,#0d2035 45%,#0a2a40 100%);
             border-radius:12px;
-            padding:2.8rem 2rem 2.2rem;
+            padding:2rem 2rem 1.5rem;
             text-align:center;
-            margin-bottom:1.2rem;
-            box-shadow:0 6px 28px rgba(0,0,0,0.55);
+            margin-bottom:0.8rem;
+            box-shadow:0 4px 18px rgba(0,0,0,0.45);
             border:1px solid rgba(0,212,255,0.14);
         ">
             <h1 style="
-                color:#ffffff;margin:0.5rem 0 0.15rem;
+                color:#ffffff;margin:0 0 0.15rem;
                 font-size:1.9rem;letter-spacing:5px;
                 text-transform:uppercase;
                 font-family:'Courier New',monospace;
@@ -142,7 +114,25 @@ def render():
     )
 
     # ================================================================== #
-    # 2 ▸  STATS                                                          #
+    # 2 ▸  HERON IMAGE (brightened)                                       #
+    # ================================================================== #
+    img = _load_brightened(_BG_IMAGE, factor=1.5)
+    if img:
+        st.image(img, use_container_width=True)
+
+    # ================================================================== #
+    # 3 ▸  QUICK ACTIONS                                                  #
+    # ================================================================== #
+    qa1, qa2 = st.columns(2)
+    if qa1.button("➕  New Flight",     use_container_width=True):
+        st.session_state.page = "new_flight"
+        st.rerun()
+    if qa2.button("📋  Flight History", use_container_width=True):
+        st.session_state.page = "flight_history"
+        st.rerun()
+
+    # ================================================================== #
+    # 4 ▸  STATS                                                          #
     # ================================================================== #
     try:
         stats = get_user_stats(user["id"]) or {}
@@ -167,9 +157,6 @@ def render():
             """,
             unsafe_allow_html=True,
         )
-        if st.button("➕  Log Your First Flight", use_container_width=True):
-            st.session_state.page = "new_flight"
-            st.rerun()
         return
 
     def _hhmm(key: str) -> str:
@@ -184,9 +171,9 @@ def render():
         except Exception:
             return "0"
 
-    last_flight = _html.escape(str(stats.get("last_flight_date") or "—"))
+    last_flight_raw = str(stats.get("last_flight_date") or "")
+    last_flight     = _html.escape(format_date_eu(last_flight_raw) if last_flight_raw else "—")
 
-    # Load display preferences (default: all shown)
     try:
         prefs = get_home_display_prefs(user["id"])
     except Exception:
@@ -195,7 +182,6 @@ def render():
     def _show(key: str) -> bool:
         return prefs.get(key, "1") == "1"
 
-    # Row 1 — primary hours
     row1_cards = []
     if _show("show_total_flights"):
         row1_cards.append(_hud_card("TOTAL FLIGHTS", _num("total_flights")))
@@ -206,13 +192,10 @@ def render():
     if _show("show_last_flight"):
         row1_cards.append(_hud_card("LAST FLIGHT",   last_flight))
 
-    # Row 2 — secondary stats
-    # Day T/O & Landings  = total_day_takeoffs  + total_day_landings
-    # Night T/O & Landings= total_night_takeoffs+ total_night_landings
-    day_tol   = (int(stats.get("total_day_takeoffs")   or 0)
-               + int(stats.get("total_day_landings")    or 0))
-    night_tol = (int(stats.get("total_night_takeoffs")  or 0)
-               + int(stats.get("total_night_landings")  or 0))
+    day_tol   = (int(stats.get("total_day_takeoffs")  or 0)
+               + int(stats.get("total_day_landings")   or 0))
+    night_tol = (int(stats.get("total_night_takeoffs") or 0)
+               + int(stats.get("total_night_landings") or 0))
 
     row2_cards = []
     if _show("show_sic_hours"):
@@ -224,77 +207,66 @@ def render():
     if _show("show_night_events"):
         row2_cards.append(_hud_card("NIGHT T/O & LANDINGS", str(night_tol), "#ffc857"))
 
+    st.markdown(
+        "<hr style='border:none;border-top:1px solid rgba(0,212,255,0.18);margin:0.8rem 0;'>",
+        unsafe_allow_html=True,
+    )
+
     if row1_cards:
         st.markdown(_hud_grid("".join(row1_cards)), unsafe_allow_html=True)
     if row2_cards:
         st.markdown(_hud_grid("".join(row2_cards)), unsafe_allow_html=True)
 
     st.markdown(
-        "<hr style='border:none;border-top:1px solid rgba(0,212,255,0.18);"
-        "margin:1.2rem 0 0.8rem;'>",
+        "<hr style='border:none;border-top:1px solid rgba(0,212,255,0.18);margin:1.2rem 0 0.8rem;'>",
         unsafe_allow_html=True,
     )
 
     # ================================================================== #
-    # 3 ▸  RECENT FLIGHTS                                                 #
+    # 5 ▸  RECENT ACTIVITY                                                #
     # ================================================================== #
     try:
         recent = get_recent_flights(user["id"], limit=5) or []
     except Exception:
         recent = []
 
-    if recent:
-        st.markdown(
-            "<div style='color:#00d4ff;font-size:0.68rem;letter-spacing:3px;"
-            "text-transform:uppercase;font-family:Courier New,monospace;"
-            "margin-bottom:0.55rem;'>▸ RECENT ACTIVITY</div>",
-            unsafe_allow_html=True,
+    if not recent:
+        return
+
+    st.markdown(
+        "<div style='color:#00d4ff;font-size:0.68rem;letter-spacing:3px;"
+        "text-transform:uppercase;font-family:Courier New,monospace;"
+        "margin-bottom:0.55rem;'>▸ RECENT ACTIVITY</div>",
+        unsafe_allow_html=True,
+    )
+
+    rows_html = ""
+    for i, log in enumerate(recent):
+        bg_row = "rgba(0,20,50,0.55)" if i % 2 == 0 else "rgba(0,10,30,0.35)"
+        instr  = " 🎓" if log.get("is_instructor") else ""
+        try:
+            dur = minutes_to_hhmm(int(log.get("duration_minutes") or 0))
+        except Exception:
+            dur = "—"
+        display_date = _html.escape(format_date_eu(str(log.get("date", ""))))
+        rows_html += (
+            f'<div style="background:{bg_row};border-left:3px solid #00d4ff33;'
+            f'padding:8px 12px;margin-bottom:4px;border-radius:0 5px 5px 0;'
+            f'font-family:Courier New,monospace;font-size:0.82rem;">'
+            f'<span style="color:#ffc857;">{display_date}   </span>'
+            f'&nbsp;│&nbsp;'
+            f'<span style="color:#ffffff;">'
+            f'{_html.escape(str(log.get("model_type","")))} '
+            f'{_html.escape(str(log.get("tail_number","")))}   </span>'
+            f'&nbsp;│&nbsp;'
+            f'<span style="color:#9fc8e0;">'
+            f'{_html.escape(str(log.get("location_name","")))}   </span>'
+            f'&nbsp;│&nbsp;'
+            f'<span style="color:#00e5a0;">'
+            f'{_html.escape(str(log.get("crew_role","")))}   {instr}</span>'
+            f'&nbsp;│&nbsp;'
+            f'<span style="color:#00d4ff;">⏱ {_html.escape(dur)}</span>'
+            f'</div>'
         )
 
-        rows_html = ""
-        for i, log in enumerate(recent):
-            bg_row = "rgba(0,20,50,0.55)" if i % 2 == 0 else "rgba(0,10,30,0.35)"
-            instr  = " 🎓" if log.get("is_instructor") else ""
-            try:
-                dur = minutes_to_hhmm(int(log.get("duration_minutes") or 0))
-            except Exception:
-                dur = "—"
-            rows_html += (
-                f'<div style="background:{bg_row};border-left:3px solid #00d4ff33;'
-                f'padding:8px 12px;margin-bottom:4px;border-radius:0 5px 5px 0;'
-                f'font-family:Courier New,monospace;font-size:0.82rem;">'
-                f'<span style="color:#ffc857;">'
-                f'{_html.escape(str(log.get("date","")))}   </span>'
-                f'&nbsp;│&nbsp;'
-                f'<span style="color:#ffffff;">'
-                f'{_html.escape(str(log.get("model_type","")))} '
-                f'{_html.escape(str(log.get("tail_number","")))}   </span>'
-                f'&nbsp;│&nbsp;'
-                f'<span style="color:#9fc8e0;">'
-                f'{_html.escape(str(log.get("location_name","")))}   </span>'
-                f'&nbsp;│&nbsp;'
-                f'<span style="color:#00e5a0;">'
-                f'{_html.escape(str(log.get("crew_role","")))}   {instr}</span>'
-                f'&nbsp;│&nbsp;'
-                f'<span style="color:#00d4ff;">⏱ {_html.escape(dur)}</span>'
-                f'</div>'
-            )
-
-        st.markdown(rows_html, unsafe_allow_html=True)
-
-        st.markdown(
-            "<hr style='border:none;border-top:1px solid rgba(0,212,255,0.18);"
-            "margin:1rem 0 0.8rem;'>",
-            unsafe_allow_html=True,
-        )
-
-    # ================================================================== #
-    # 4 ▸  QUICK ACTIONS                                                  #
-    # ================================================================== #
-    qa1, qa2 = st.columns(2)
-    if qa1.button("➕  New Flight",     use_container_width=True):
-        st.session_state.page = "new_flight"
-        st.rerun()
-    if qa2.button("📋  Flight History", use_container_width=True):
-        st.session_state.page = "flight_history"
-        st.rerun()
+    st.markdown(rows_html, unsafe_allow_html=True)

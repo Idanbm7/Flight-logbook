@@ -21,6 +21,15 @@ METHODS = ["Manual", "Automatic"]
 # Time helpers
 # ---------------------------------------------------------------------------
 
+def format_date_eu(date_str: str) -> str:
+    """Convert YYYY-MM-DD to DD/MM/YYYY for display."""
+    try:
+        from datetime import date as _date
+        return _date.fromisoformat(str(date_str)).strftime("%d/%m/%Y")
+    except Exception:
+        return str(date_str) if date_str else "—"
+
+
 def minutes_to_hhmm(minutes: int) -> str:
     """90 → '1:30'"""
     if minutes < 0:

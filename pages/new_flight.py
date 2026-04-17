@@ -85,7 +85,7 @@ def render():
     # ------------------------------------------------------------------ #
     st.subheader("Date & Time")
     c1, c2, c3 = st.columns(3)
-    flight_date = c1.date_input("Date",       value=date.today(),  key=f"nf_date_{v}")
+    flight_date = c1.date_input("Date",       value=date.today(),  key=f"nf_date_{v}", format="DD/MM/YYYY")
     start_time  = c2.time_input("Start Time", value=time(9, 0),    step=900, key=f"nf_start_{v}",
                                 on_change=_sync_end_time)
     end_time    = c3.time_input("End Time",   value=time(10, 0),   step=900, key=f"nf_end_{v}")

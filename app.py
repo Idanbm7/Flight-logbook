@@ -42,6 +42,14 @@ st.markdown("""
     footer     { visibility: hidden; }
     header     { visibility: hidden; }
 
+    /* Stack columns vertically on narrow screens */
+    @media (max-width: 640px) {
+        [data-testid="column"] {
+            min-width: 100% !important;
+            flex: 1 1 100% !important;
+        }
+    }
+
     /* Tighten metric cards */
     [data-testid="metric-container"] {
         background: rgba(0, 16, 40, 0.75);
@@ -79,6 +87,8 @@ if "user" not in st.session_state:
     st.session_state.user = None
 if "page" not in st.session_state:
     st.session_state.page = "home"
+if "show_register" not in st.session_state:
+    st.session_state.show_register = False
 
 
 # ---------------------------------------------------------------------------
@@ -99,28 +109,40 @@ def show_login():
         if user:
             st.session_state.user = user
             st.session_state.page = "home"
+            st.session_state.show_register = False
             st.rerun()
         else:
             st.error("Invalid username or password.")
 
-    st.divider()
-    st.subheader("New here? Create an account")
+    if not st.session_state.show_register:
+        if st.button("New user? Sign Up", use_container_width=False):
+            st.session_state.show_register = True
+            st.rerun()
+    else:
+        st.divider()
+        st.subheader("Create an Account")
 
-    with st.form("register_form"):
-        new_user  = st.text_input("Choose a username")
-        new_pass  = st.text_input("Choose a password", type="password")
-        new_pass2 = st.text_input("Confirm password",  type="password")
-        reg_ok    = st.form_submit_button("Create Account", use_container_width=True)
+        with st.form("register_form"):
+            new_user  = st.text_input("Choose a username")
+            new_pass  = st.text_input("Choose a password", type="password")
+            new_pass2 = st.text_input("Confirm password",  type="password")
+            reg_ok    = st.form_submit_button("Create Account", use_container_width=True)
 
-    if reg_ok:
-        if new_pass != new_pass2:
-            st.error("Passwords do not match.")
-        else:
-            ok, msg = register_user(new_user, new_pass)
-            if ok:
-                st.success(msg + " You can now sign in.")
+        if reg_ok:
+            if new_pass != new_pass2:
+                st.error("Passwords do not match.")
             else:
-                st.error(msg)
+                ok, msg = register_user(new_user, new_pass)
+                if ok:
+                    st.success(msg + " You can now sign in.")
+                    st.session_state.show_register = False
+                    st.rerun()
+                else:
+                    st.error(msg)
+
+        if st.button("← Back to Sign In", use_container_width=True):
+            st.session_state.show_register = False
+            st.rerun()
 
 
 # ---------------------------------------------------------------------------

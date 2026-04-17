@@ -6,16 +6,16 @@ import os
 import datetime
 import streamlit as st
 
-from database import (
-    get_flight_logs, get_flight_log_by_id,
-    delete_flight_log, update_flight_log,
-    get_aircraft, get_gcs_types, get_sites,
-)
 from utils import (
     flight_logs_to_dataframe, export_to_excel, export_to_pdf,
     minutes_to_hhmm, MISSION_PURPOSES, CREW_ROLES,
     aggregate_event_rows, flight_log_to_event_rows,
-    EVENT_TYPES, PERIODS, METHODS,
+    EVENT_TYPES, PERIODS, METHODS, format_date_eu,
+)
+from database import (
+    get_flight_logs, get_flight_log_by_id,
+    delete_flight_log, update_flight_log,
+    get_aircraft, get_gcs_types, get_sites,
 )
 
 EXPORT_DIR = os.path.join(os.path.dirname(__file__), "..", "data")
@@ -59,7 +59,7 @@ def _edit_dialog(log_id: int):
     existing_start = datetime.time.fromisoformat(log["start_time"])
     existing_end   = datetime.time.fromisoformat(log["end_time"])
 
-    flight_date = c1.date_input("Date",       value=existing_date,  key=f"ded_date_{log_id}")
+    flight_date = c1.date_input("Date",       value=existing_date,  key=f"ded_date_{log_id}", format="DD/MM/YYYY")
     start_time  = c2.time_input("Start Time", value=existing_start, step=900, key=f"ded_start_{log_id}")
     end_time    = c3.time_input("End Time",   value=existing_end,   step=900, key=f"ded_end_{log_id}")
 
@@ -247,8 +247,8 @@ def render():
     # ---- Export ----
     with st.expander("📤 Export", expanded=False):
         exp_c1, exp_c2 = st.columns(2)
-        exp_date_from = exp_c1.date_input("From Date", value=None, key="exp_from")
-        exp_date_to   = exp_c2.date_input("To Date",   value=None, key="exp_to")
+        exp_date_from = exp_c1.date_input("From Date", value=None, key="exp_from", format="DD/MM/YYYY")
+        exp_date_to   = exp_c2.date_input("To Date",   value=None, key="exp_to",  format="DD/MM/YYYY")
         st.caption("Leave blank to export all currently filtered flights.")
 
         export_logs = filtered
@@ -301,7 +301,7 @@ def render():
     for log in filtered:
         instr_badge = " 🎓" if log["is_instructor"] else ""
         with st.expander(
-            f"**{log['date']}** · {log['model_type']} · "
+            f"**{format_date_eu(log['date'])}** · {log['model_type']} · "
             f"{log['location_name']} · {log['crew_role']}{instr_badge} · "
             f"{minutes_to_hhmm(log['duration_minutes'])} hrs"
         ):
