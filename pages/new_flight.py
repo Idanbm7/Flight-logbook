@@ -178,25 +178,19 @@ def render():
         "Leave empty if no events to record."
     )
 
-    # Column headers (only when rows exist)
-    if st.session_state.nf_events:
-        hcols = st.columns([2, 2, 1, 2, 0.6])
-        hcols[0].markdown("**Event Type**")
-        hcols[1].markdown("**Day / Night**")
-        hcols[2].markdown("**Qty**")
-        hcols[3].markdown("**Method**")
-        hcols[4].markdown("**Del**")
-
     rows_to_remove = []
     for rid in st.session_state.nf_events:
-        rc = st.columns([2, 2, 1, 2, 0.6])
-        rc[0].selectbox("",  EVENT_TYPES, key=f"nf_et_{rid}", label_visibility="collapsed")
-        rc[1].selectbox("",  PERIODS,     key=f"nf_ep_{rid}", label_visibility="collapsed")
-        rc[2].number_input("", min_value=1, max_value=99, value=1,
-                           key=f"nf_eq_{rid}", label_visibility="collapsed")
-        rc[3].selectbox("",  METHODS,     key=f"nf_em_{rid}", label_visibility="collapsed")
-        if rc[4].button("✕", key=f"nf_del_{rid}"):
-            rows_to_remove.append(rid)
+        with st.container(border=True):
+            top = st.columns(2)
+            top[0].selectbox("Event Type", EVENT_TYPES, key=f"nf_et_{rid}")
+            top[1].selectbox("Day / Night", PERIODS,    key=f"nf_ep_{rid}")
+            bot = st.columns([1, 2, 1])
+            bot[0].number_input("Qty", min_value=1, max_value=99, value=1, key=f"nf_eq_{rid}")
+            bot[1].selectbox("Method", METHODS, key=f"nf_em_{rid}")
+            bot[2].markdown("<div style='padding-top:1.85rem'>", unsafe_allow_html=True)
+            if bot[2].button("✕ Remove", key=f"nf_del_{rid}", use_container_width=True):
+                rows_to_remove.append(rid)
+            bot[2].markdown("</div>", unsafe_allow_html=True)
 
     for rid in rows_to_remove:
         st.session_state.nf_events.remove(rid)

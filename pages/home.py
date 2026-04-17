@@ -1,11 +1,13 @@
 """
 pages/home.py — Home screen.
-Layout: title header → brightened Heron-1 image → quick-action buttons → stats → recent activity.
+Layout: Heron-1 image as header background → 2×2 quick-action buttons → stats → recent activity.
 """
 
-import os
+import base64
 import html as _html
+import os
 from datetime import date
+from io import BytesIO
 
 import streamlit as st
 
@@ -14,7 +16,6 @@ _BG_IMAGE = os.path.join(_ROOT, "Heron1.jpg")
 
 
 def _load_brightened(path: str, factor: float = 1.5):
-    """Return a brightness-enhanced PIL Image, or None on failure."""
     try:
         from PIL import Image, ImageEnhance
     except ImportError:
@@ -28,6 +29,58 @@ def _load_brightened(path: str, factor: float = 1.5):
         return ImageEnhance.Brightness(Image.open(path)).enhance(factor)
     except Exception:
         return None
+
+
+def _header_with_bg(img, safe_user: str, safe_date: str) -> str:
+    """Return HTML for a full-width banner: Heron image as background, title overlaid."""
+    if img:
+        buf = BytesIO()
+        img.save(buf, format="JPEG", quality=82)
+        b64 = base64.b64encode(buf.getvalue()).decode()
+        bg = (
+            f"background-image:url('data:image/jpeg;base64,{b64}');"
+            "background-size:cover;background-position:center 40%;"
+        )
+    else:
+        bg = "background:linear-gradient(135deg,#060d1b 0%,#0d2035 45%,#0a2a40 100%);"
+
+    return f"""
+    <div style="
+        {bg}
+        border-radius:12px;
+        margin-bottom:1rem;
+        overflow:hidden;
+        position:relative;
+        min-height:160px;
+        display:flex;
+        align-items:center;
+        justify-content:center;
+        box-shadow:0 4px 18px rgba(0,0,0,0.5);
+        border:1px solid rgba(0,212,255,0.14);
+    ">
+        <div style="
+            position:absolute;inset:0;
+            background:rgba(2,10,25,0.52);
+        "></div>
+        <div style="position:relative;z-index:1;text-align:center;padding:2.2rem 1.5rem;">
+            <h1 style="
+                color:#ffffff;margin:0 0 0.2rem;
+                font-size:2rem;letter-spacing:5px;
+                text-transform:uppercase;
+                font-family:'Courier New',monospace;
+                text-shadow:0 0 24px rgba(0,212,255,0.7);
+            ">FLIGHT LOGBOOK</h1>
+            <div style="
+                color:#00d4ff;font-size:0.9rem;margin:0.2rem 0 0.4rem;
+                font-family:'Courier New',monospace;letter-spacing:2px;
+            ">── WELCOME, {safe_user} ──</div>
+            <p style="
+                color:#c0d8e8;margin:0;font-size:0.78rem;
+                font-family:'Courier New',monospace;
+            ">{safe_date}</p>
+        </div>
+    </div>
+    """
 
 
 def _hud_card(label: str, value: str, accent: str = "#00d4ff") -> str:
@@ -80,59 +133,32 @@ def render():
     safe_date = _html.escape(today)
 
     # ================================================================== #
-    # 1 ▸  HEADER / TITLE                                                 #
-    # ================================================================== #
-    st.markdown(
-        f"""
-        <div style="
-            background:linear-gradient(135deg,#060d1b 0%,#0d2035 45%,#0a2a40 100%);
-            border-radius:12px;
-            padding:2rem 2rem 1.5rem;
-            text-align:center;
-            margin-bottom:0.8rem;
-            box-shadow:0 4px 18px rgba(0,0,0,0.45);
-            border:1px solid rgba(0,212,255,0.14);
-        ">
-            <h1 style="
-                color:#ffffff;margin:0 0 0.15rem;
-                font-size:1.9rem;letter-spacing:5px;
-                text-transform:uppercase;
-                font-family:'Courier New',monospace;
-                text-shadow:0 0 22px rgba(0,212,255,0.55);
-            ">FLIGHT LOGBOOK</h1>
-            <div style="
-                color:#00d4ff;font-size:0.95rem;margin:0.15rem 0 0.35rem;
-                font-family:'Courier New',monospace;letter-spacing:2px;
-            ">── WELCOME, {safe_user} ──</div>
-            <p style="
-                color:#6a9fbf;margin:0;font-size:0.8rem;
-                font-family:'Courier New',monospace;
-            ">{safe_date}</p>
-        </div>
-        """,
-        unsafe_allow_html=True,
-    )
-
-    # ================================================================== #
-    # 2 ▸  HERON IMAGE (brightened)                                       #
+    # 1 ▸  HEADER — Heron image as background banner                      #
     # ================================================================== #
     img = _load_brightened(_BG_IMAGE, factor=1.5)
-    if img:
-        st.image(img, use_container_width=True)
+    st.markdown(_header_with_bg(img, safe_user, safe_date), unsafe_allow_html=True)
 
     # ================================================================== #
-    # 3 ▸  QUICK ACTIONS                                                  #
+    # 2 ▸  QUICK ACTIONS — 2 × 2 grid                                    #
     # ================================================================== #
     qa1, qa2 = st.columns(2)
     if qa1.button("➕  New Flight",     use_container_width=True):
         st.session_state.page = "new_flight"
         st.rerun()
-    if qa2.button("📋  Flight History", use_container_width=True):
+    if qa2.button("📋  My Flights",     use_container_width=True):
         st.session_state.page = "flight_history"
         st.rerun()
 
+    qa3, qa4 = st.columns(2)
+    if qa3.button("📊  Dashboard",      use_container_width=True):
+        st.session_state.page = "dashboard"
+        st.rerun()
+    if qa4.button("⚙️  Settings",       use_container_width=True):
+        st.session_state.page = "settings"
+        st.rerun()
+
     # ================================================================== #
-    # 4 ▸  STATS                                                          #
+    # 3 ▸  STATS                                                          #
     # ================================================================== #
     try:
         stats = get_user_stats(user["id"]) or {}
@@ -223,7 +249,7 @@ def render():
     )
 
     # ================================================================== #
-    # 5 ▸  RECENT ACTIVITY                                                #
+    # 4 ▸  RECENT ACTIVITY                                                #
     # ================================================================== #
     try:
         recent = get_recent_flights(user["id"], limit=5) or []

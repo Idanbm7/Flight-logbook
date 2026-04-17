@@ -42,14 +42,6 @@ st.markdown("""
     footer     { visibility: hidden; }
     header     { visibility: hidden; }
 
-    /* Stack columns vertically on narrow screens */
-    @media (max-width: 640px) {
-        [data-testid="column"] {
-            min-width: 100% !important;
-            flex: 1 1 100% !important;
-        }
-    }
-
     /* Tighten metric cards */
     [data-testid="metric-container"] {
         background: rgba(0, 16, 40, 0.75);
@@ -96,7 +88,7 @@ if "show_register" not in st.session_state:
 # ---------------------------------------------------------------------------
 
 def show_login():
-    st.title("🚁 Flight Logbook")
+    st.title("Flight Logbook")
     st.subheader("Sign In")
 
     with st.form("login_form"):
@@ -160,17 +152,14 @@ def show_nav():
 
     st.divider()
 
-    pages = [
-        ("home",           "🏠 Home"),
-        ("new_flight",     "➕ New Flight"),
-        ("flight_history", "📋 My Flights"),
-        ("settings",       "⚙️ Settings"),
-    ]
-    cols = st.columns(len(pages))
-    for col, (key, label) in zip(cols, pages):
-        if col.button(label, use_container_width=True):
-            st.session_state.page = key
-            st.rerun()
+    pages_row1 = [("home", "🏠 Home"), ("new_flight", "➕ New Flight")]
+    pages_row2 = [("flight_history", "📋 My Flights"), ("settings", "⚙️ Settings")]
+    for row_pages in (pages_row1, pages_row2):
+        cols = st.columns(2)
+        for col, (key, label) in zip(cols, row_pages):
+            if col.button(label, use_container_width=True):
+                st.session_state.page = key
+                st.rerun()
 
     st.divider()
 
@@ -183,6 +172,7 @@ _PAGE_MAP = {
     "home":           "pages.home",
     "new_flight":     "pages.new_flight",
     "flight_history": "pages.flight_history",
+    "dashboard":      "pages.dashboard",
     "settings":       "pages.settings",
 }
 
