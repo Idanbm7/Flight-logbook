@@ -194,6 +194,73 @@ def _find_unicode_font() -> tuple[str, str]:
     return "", ""
 
 
+# ---------------------------------------------------------------------------
+# EP duration calculation
+# ---------------------------------------------------------------------------
+
+def calculate_ep_duration(events: list[dict]) -> int:
+    """EP mode: multiply each event's qty by 15 minutes and sum totals.
+    e.g. Takeoff ×3 = 45 min, Landing ×2 = 30 min → 75 min total.
+    """
+    return sum(int(e.get("qty", 1)) * 15 for e in events)
+
+
+# ---------------------------------------------------------------------------
+# Google Sheets integration
+# ---------------------------------------------------------------------------
+
+def append_flight_to_gsheet(sheet_url: str, row: dict) -> tuple[bool, str]:
+    """Append one flight row to the Google Sheet at sheet_url.
+
+    Expects a credentials.json service account key next to app.py.
+    Columns written: Date, Pilot_Role, Log_Type, Duration, Events, Comments.
+    A header row is added automatically if the sheet is empty.
+    """
+    try:
+        try:
+            import gspread
+        except ImportError:
+            import subprocess, sys
+            subprocess.check_call(
+                [sys.executable, "-m", "pip", "install", "gspread", "google-auth"],
+                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+            )
+            import gspread
+
+        creds_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "credentials.json")
+        if not os.path.exists(creds_path):
+            return False, (
+                "credentials.json not found. Place your Google service account JSON key "
+                "next to app.py, then share the sheet with the service account email."
+            )
+
+        gc          = gspread.service_account(filename=creds_path)
+        spreadsheet = gc.open_by_url(sheet_url)
+        worksheet   = spreadsheet.sheet1
+
+        if not worksheet.get_all_values():
+            worksheet.append_row(
+                ["Date", "Pilot_Role", "Log_Type", "Duration", "Events", "Comments"],
+                value_input_option="USER_ENTERED",
+            )
+
+        worksheet.append_row(
+            [
+                row.get("date", ""),
+                row.get("pilot_role", ""),
+                row.get("log_type", ""),
+                row.get("duration", ""),
+                row.get("events", ""),
+                row.get("comments", ""),
+            ],
+            value_input_option="USER_ENTERED",
+        )
+        return True, "Flight saved to Google Sheets."
+
+    except Exception as exc:
+        return False, f"Google Sheets error: {exc}"
+
+
 def export_to_pdf(
     logs: list[dict],
     filepath: str,

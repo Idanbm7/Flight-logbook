@@ -1,14 +1,10 @@
 """
-app.py — Streamlit entry point. Login/register and top-level navigation.
-Run with:  venv/Scripts/streamlit run app.py
+app.py — Streamlit entry point. Google Sheets setup gate and top-level router.
+Run with:  streamlit run app.py
 """
 
 import streamlit as st
-from database import init_db, register_user, authenticate_user
 
-# ---------------------------------------------------------------------------
-# Page config  (must be the very first Streamlit call)
-# ---------------------------------------------------------------------------
 st.set_page_config(
     page_title="Flight Logbook",
     page_icon="🚁",
@@ -16,195 +12,143 @@ st.set_page_config(
     initial_sidebar_state="collapsed",
 )
 
-# ---------------------------------------------------------------------------
-# Global CSS — aviation dark theme, mobile-friendly touch targets
-# NOTE: avoid [class*="css"] — that selector is deprecated in Streamlit 1.35+
-#       and produces silent internal warnings that Streamlit surfaces as UI noise.
-# ---------------------------------------------------------------------------
 st.markdown("""
 <style>
-    /* Base font */
-    html, body, .stApp { font-size: 16px; }
-
-    /* Touch-friendly buttons */
-    .stButton > button {
-        min-height: 3rem;
-        font-size: 1rem;
-        border-radius: 8px;
-        width: 100%;
-    }
-
-    /* Larger form inputs */
-    input, textarea, select { font-size: 1rem !important; }
-
-    /* Hide Streamlit chrome */
-    #MainMenu  { visibility: hidden; }
-    footer     { visibility: hidden; }
-    header     { visibility: hidden; }
-
-    /* Tighten metric cards */
-    [data-testid="metric-container"] {
-        background: rgba(0, 16, 40, 0.75);
-        border: 1px solid rgba(0, 212, 255, 0.2);
-        border-radius: 6px;
-        padding: 10px 14px;
-    }
-    [data-testid="metric-container"] label {
-        color: #00d4ff !important;
-        font-size: 0.7rem !important;
-        letter-spacing: 1.5px;
-        text-transform: uppercase;
-    }
-    [data-testid="stMetricValue"] {
-        color: #ffffff !important;
-        font-family: 'Courier New', monospace;
-        font-size: 1.4rem !important;
-    }
+html, body, .stApp { font-size: 16px; }
+.stButton > button {
+    min-height: 3rem;
+    font-size: 1rem;
+    border-radius: 8px;
+    width: 100%;
+}
+input, textarea, select { font-size: 1rem !important; }
+#MainMenu { visibility: hidden; }
+footer     { visibility: hidden; }
+header     { visibility: hidden; }
+[data-testid="metric-container"] {
+    background: rgba(0, 16, 40, 0.75);
+    border: 1px solid rgba(0, 212, 255, 0.2);
+    border-radius: 6px;
+    padding: 10px 14px;
+}
+[data-testid="metric-container"] label {
+    color: #00d4ff !important;
+    font-size: 0.7rem !important;
+    letter-spacing: 1.5px;
+    text-transform: uppercase;
+}
+[data-testid="stMetricValue"] {
+    color: #ffffff !important;
+    font-family: 'Courier New', monospace;
+    font-size: 1.4rem !important;
+}
 </style>
 """, unsafe_allow_html=True)
 
-# ---------------------------------------------------------------------------
-# Bootstrap DB (creates data/ dir if needed)
-# ---------------------------------------------------------------------------
+# Auto-install streamlit-local-storage
 try:
-    init_db()
-except Exception as _db_err:
-    st.error(f"Database initialisation failed: {_db_err}")
-    st.stop()
+    from streamlit_local_storage import LocalStorage
+except ImportError:
+    import subprocess, sys
+    subprocess.check_call(
+        [sys.executable, "-m", "pip", "install", "streamlit-local-storage"],
+        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+    )
+    from streamlit_local_storage import LocalStorage
 
-# ---------------------------------------------------------------------------
-# Session defaults
-# ---------------------------------------------------------------------------
-if "user" not in st.session_state:
-    st.session_state.user = None
+localS = LocalStorage()
+
+# Read from localStorage and cache to session_state (getItem returns None on first render)
+_url_ls  = localS.getItem("sheet_url")
+_role_ls = localS.getItem("primary_role")
+
+if _url_ls:
+    st.session_state["sheet_url"] = _url_ls
+if _role_ls:
+    st.session_state["primary_role"] = _role_ls
+
 if "page" not in st.session_state:
     st.session_state.page = "home"
-if "show_register" not in st.session_state:
-    st.session_state.show_register = False
+
+sheet_url = st.session_state.get("sheet_url", "")
 
 
-# ---------------------------------------------------------------------------
-# Login / Register
-# ---------------------------------------------------------------------------
+# ── Setup gate ───────────────────────────────────────────────────────────────
 
-def show_login():
-    st.title("Flight Logbook")
-    st.subheader("Sign In")
+def show_setup():
+    st.title("FLIGHT LOGBOOK")
+    st.subheader("Initial Setup")
 
-    with st.form("login_form"):
-        username  = st.text_input("Username")
-        password  = st.text_input("Password", type="password")
-        submitted = st.form_submit_button("Sign In", use_container_width=True)
+    with st.container(border=True):
+        st.markdown("### Connect to Google Sheets")
+        st.info(
+            "Your flight data is saved to a Google Sheet. "
+            "Provide the sheet URL and your primary role to begin."
+        )
 
-    if submitted:
-        user = authenticate_user(username, password)
-        if user:
-            st.session_state.user = user
-            st.session_state.page = "home"
-            st.session_state.show_register = False
-            st.rerun()
-        else:
-            st.error("Invalid username or password.")
+        with st.expander("How to set up credentials (click to expand)"):
+            st.markdown("""
+1. Go to [Google Cloud Console](https://console.cloud.google.com/) and create a project.
+2. Enable the **Google Sheets API** for that project.
+3. Create a **Service Account**, then download its JSON key.
+4. Rename the file to `credentials.json` and place it next to `app.py`.
+5. Open your Google Sheet, click **Share**, and grant **Editor** access to the service account email (found in `credentials.json`).
+6. Paste the full Google Sheet URL below.
+""")
 
-    if not st.session_state.show_register:
-        if st.button("New user? Sign Up", use_container_width=False):
-            st.session_state.show_register = True
-            st.rerun()
-    else:
-        st.divider()
-        st.subheader("Create an Account")
+        url = st.text_input(
+            "Google Sheet URL",
+            placeholder="https://docs.google.com/spreadsheets/d/…/edit",
+            key="setup_url",
+        )
+        role = st.selectbox(
+            "Primary Role",
+            ["IP", "EP", "Dual"],
+            key="setup_role",
+            help=(
+                "IP = Instructor Pilot — manual start/end times.\n"
+                "EP = Evaluated Pilot — duration from events (qty × 15 min).\n"
+                "Dual = choose mode per flight."
+            ),
+        )
 
-        with st.form("register_form"):
-            new_user  = st.text_input("Choose a username")
-            new_pass  = st.text_input("Choose a password", type="password")
-            new_pass2 = st.text_input("Confirm password",  type="password")
-            reg_ok    = st.form_submit_button("Create Account", use_container_width=True)
-
-        if reg_ok:
-            if new_pass != new_pass2:
-                st.error("Passwords do not match.")
+        if st.button("Save & Open Logbook", use_container_width=True, type="primary"):
+            if not url.strip() or "docs.google.com" not in url:
+                st.error("Please enter a valid Google Sheets URL.")
             else:
-                ok, msg = register_user(new_user, new_pass)
-                if ok:
-                    st.success(msg + " You can now sign in.")
-                    st.session_state.show_register = False
-                    st.rerun()
-                else:
-                    st.error(msg)
-
-        if st.button("← Back to Sign In", use_container_width=True):
-            st.session_state.show_register = False
-            st.rerun()
-
-
-# ---------------------------------------------------------------------------
-# Navigation bar
-# ---------------------------------------------------------------------------
-
-def show_nav():
-    user = st.session_state.user
-    top_l, top_r = st.columns([3, 1])
-    top_l.markdown(f"**Logged in as:** {user['username']}")
-    if top_r.button("Sign Out"):
-        st.session_state.user = None
-        st.session_state.page = "home"
-        st.rerun()
-
-    st.divider()
-
-    pages_row1 = [("home", "🏠 Home"), ("new_flight", "➕ New Flight")]
-    pages_row2 = [("flight_history", "📋 My Flights"), ("settings", "⚙️ Settings")]
-    for row_pages in (pages_row1, pages_row2):
-        cols = st.columns(2)
-        for col, (key, label) in zip(cols, row_pages):
-            if col.button(label, use_container_width=True):
-                st.session_state.page = key
+                localS.setItem("sheet_url", url.strip())
+                localS.setItem("primary_role", role)
+                st.session_state["sheet_url"] = url.strip()
+                st.session_state["primary_role"] = role
+                st.success("Settings saved — loading your logbook…")
                 st.rerun()
 
-    st.divider()
+
+if not sheet_url:
+    show_setup()
+    st.stop()
 
 
-# ---------------------------------------------------------------------------
-# Router — each render() wrapped so unhandled exceptions never reach the UI
-# ---------------------------------------------------------------------------
+# ── Page router ──────────────────────────────────────────────────────────────
 
 _PAGE_MAP = {
     "home":           "pages.home",
     "new_flight":     "pages.new_flight",
     "flight_history": "pages.flight_history",
-    "dashboard":      "pages.dashboard",
     "settings":       "pages.settings",
 }
 
 
 def _safe_render(module_path: str) -> None:
-    """Import module and call render(), catching all exceptions cleanly."""
     try:
         import importlib
         mod = importlib.import_module(module_path)
         mod.render()
     except Exception as exc:
-        st.error(
-            "An unexpected error occurred on this page. "
-            "Please try refreshing or navigating away and back."
-        )
-        # Print to server console only — never expose tracebacks in the UI
+        st.error("An unexpected error occurred on this page.")
         import traceback
         print(f"[RENDER ERROR] {module_path}: {exc}")
         traceback.print_exc()
 
 
-def main():
-    if st.session_state.user is None:
-        show_login()
-        return
-
-    show_nav()
-
-    page   = st.session_state.page
-    module = _PAGE_MAP.get(page, "pages.home")
-    _safe_render(module)
-
-
-if __name__ == "__main__":
-    main()
+_safe_render(_PAGE_MAP.get(st.session_state.page, "pages.home"))
