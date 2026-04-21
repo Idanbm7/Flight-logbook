@@ -1,5 +1,6 @@
 """
-app.py — Streamlit entry point. Google Sheets setup gate and top-level router.
+app.py — Entry point. Auto-creates a single default pilot user, loads settings
+from SQLite user_preferences, and routes to pages.
 Run with:  streamlit run app.py
 """
 
@@ -31,111 +32,55 @@ header     { visibility: hidden; }
     border-radius: 6px;
     padding: 10px 14px;
 }
-[data-testid="metric-container"] label {
-    color: #00d4ff !important;
-    font-size: 0.7rem !important;
-    letter-spacing: 1.5px;
-    text-transform: uppercase;
-}
-[data-testid="stMetricValue"] {
-    color: #ffffff !important;
-    font-family: 'Courier New', monospace;
-    font-size: 1.4rem !important;
-}
 </style>
 """, unsafe_allow_html=True)
 
-# Auto-install streamlit-local-storage
+# ── Database bootstrap ────────────────────────────────────────────────────────
+from database import (
+    init_db, authenticate_user, register_user,
+    get_connection, get_home_display_prefs,
+)
+
+init_db()
+
+# Migrate: add log_type column to flight_logs if the schema predates it
 try:
-    from streamlit_local_storage import LocalStorage
-except ImportError:
-    import subprocess, sys
-    subprocess.check_call(
-        [sys.executable, "-m", "pip", "install", "streamlit-local-storage"],
-        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-    )
-    from streamlit_local_storage import LocalStorage
+    with get_connection() as _conn:
+        _conn.execute("ALTER TABLE flight_logs ADD COLUMN log_type TEXT DEFAULT 'IP'")
+except Exception:
+    pass  # column already exists — safe to ignore
 
-localS = LocalStorage()
+# Auto-create / auto-login a single default pilot user (no login screen)
+_DEFAULT_USER = "pilot"
+_DEFAULT_PASS  = "logbook2025"
 
-# Read from localStorage and cache to session_state (getItem returns None on first render)
-_url_ls  = localS.getItem("sheet_url")
-_role_ls = localS.getItem("primary_role")
+if "user" not in st.session_state:
+    user = authenticate_user(_DEFAULT_USER, _DEFAULT_PASS)
+    if not user:
+        register_user(_DEFAULT_USER, _DEFAULT_PASS)
+        user = authenticate_user(_DEFAULT_USER, _DEFAULT_PASS)
+    st.session_state.user = user
 
-if _url_ls:
-    st.session_state["sheet_url"] = _url_ls
-if _role_ls:
-    st.session_state["primary_role"] = _role_ls
+# ── Load persisted settings from SQLite on first run ─────────────────────────
+# Settings are stored in user_preferences with keys:
+#   sheet_url, primary_role, display_name, default_aircraft_id
+if "settings_loaded" not in st.session_state:
+    _prefs = get_home_display_prefs(st.session_state.user["id"])
+    for _k in ("sheet_url", "primary_role", "display_name", "default_aircraft_id"):
+        if _k in _prefs:
+            st.session_state[_k] = _prefs[_k]
+    st.session_state.settings_loaded = True
 
 if "page" not in st.session_state:
     st.session_state.page = "home"
 
-sheet_url = st.session_state.get("sheet_url", "")
-
-
-# ── Setup gate ───────────────────────────────────────────────────────────────
-
-def show_setup():
-    st.title("FLIGHT LOGBOOK")
-    st.subheader("Initial Setup")
-
-    with st.container(border=True):
-        st.markdown("### Connect to Google Sheets")
-        st.info(
-            "Your flight data is saved to a Google Sheet. "
-            "Provide the sheet URL and your primary role to begin."
-        )
-
-        with st.expander("How to set up credentials (click to expand)"):
-            st.markdown("""
-1. Go to [Google Cloud Console](https://console.cloud.google.com/) and create a project.
-2. Enable the **Google Sheets API** for that project.
-3. Create a **Service Account**, then download its JSON key.
-4. Rename the file to `credentials.json` and place it next to `app.py`.
-5. Open your Google Sheet, click **Share**, and grant **Editor** access to the service account email (found in `credentials.json`).
-6. Paste the full Google Sheet URL below.
-""")
-
-        url = st.text_input(
-            "Google Sheet URL",
-            placeholder="https://docs.google.com/spreadsheets/d/…/edit",
-            key="setup_url",
-        )
-        role = st.selectbox(
-            "Primary Role",
-            ["IP", "EP", "Dual"],
-            key="setup_role",
-            help=(
-                "IP = Instructor Pilot — manual start/end times.\n"
-                "EP = Evaluated Pilot — duration from events (qty × 15 min).\n"
-                "Dual = choose mode per flight."
-            ),
-        )
-
-        if st.button("Save & Open Logbook", use_container_width=True, type="primary"):
-            if not url.strip() or "docs.google.com" not in url:
-                st.error("Please enter a valid Google Sheets URL.")
-            else:
-                localS.setItem("sheet_url", url.strip())
-                localS.setItem("primary_role", role)
-                st.session_state["sheet_url"] = url.strip()
-                st.session_state["primary_role"] = role
-                st.success("Settings saved — loading your logbook…")
-                st.rerun()
-
-
-if not sheet_url:
-    show_setup()
-    st.stop()
-
-
-# ── Page router ──────────────────────────────────────────────────────────────
+# ── Page router ───────────────────────────────────────────────────────────────
 
 _PAGE_MAP = {
-    "home":           "pages.home",
-    "new_flight":     "pages.new_flight",
-    "flight_history": "pages.flight_history",
-    "settings":       "pages.settings",
+    "home":       "pages.home",
+    "new_flight": "pages.new_flight",
+    "my_flights": "pages.flight_history",
+    "settings":   "pages.settings",
 }
 
 

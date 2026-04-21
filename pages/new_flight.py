@@ -1,51 +1,84 @@
 """
-pages/new_flight.py — New flight log entry with IP, EP, and Dual modes.
+pages/new_flight.py — New flight log entry.
 
-IP mode  : enter start/end times manually; duration = end − start.
-EP mode  : add events with quantities; duration = sum(qty × 15 min).
-Dual mode: per-flight checkbox to toggle IP or EP logic.
+IP mode   : manual Start/End times; duration = end − start.
+EP mode   : events × 15 min each; if Start ≠ End the manual gap is ADDED on top.
+BOTH mode : toggle at top to choose IP or EP per flight.
+
+Saves to SQLite first, then POSTs to Google Sheets (Apps Script Web App).
 """
 
 import streamlit as st
 from datetime import date, time, datetime, timedelta
 
-from utils import calculate_ep_duration, append_flight_to_gsheet
+from database import (
+    add_flight_log, get_aircraft, get_gcs_types, get_sites,
+    get_custom_site_suggestions,
+)
+from utils import (
+    calculate_ep_duration, append_flight_to_gsheet,
+    aggregate_event_rows,
+    MISSION_PURPOSES, CREW_ROLES, EVENT_TYPES, PERIODS, METHODS,
+)
 
-EVENT_TYPES = ["Takeoff", "Landing", "Approach"]
-PILOT_ROLES = ["PIC", "SIC"]
+_MINS_PER_EVENT = 15
 
+
+# ── State helpers ──────────────────────────────────────────────────────────────
 
 def _init_state():
-    if "nf_version"   not in st.session_state:
-        st.session_state.nf_version   = 0
-    if "nf_events"    not in st.session_state:
-        st.session_state.nf_events    = []
-    if "nf_event_ctr" not in st.session_state:
-        st.session_state.nf_event_ctr = 0
+    for key, default in [
+        ("nf_version",   0),
+        ("nf_events",    []),
+        ("nf_event_ctr", 0),
+    ]:
+        if key not in st.session_state:
+            st.session_state[key] = default
 
 
 def _clear_form():
-    st.session_state.nf_version   = st.session_state.nf_version + 1
+    v = st.session_state.nf_version + 1
+    for k in list(st.session_state.keys()):
+        if k.startswith(("nf_et_", "nf_ep_", "nf_eq_", "nf_em_")):
+            del st.session_state[k]
+    st.session_state.nf_version   = v
     st.session_state.nf_events    = []
     st.session_state.nf_event_ctr = 0
-    for k in list(st.session_state.keys()):
-        if k.startswith(("nf_et_", "nf_eq_")):
-            del st.session_state[k]
 
 
 def _collect_events() -> list[dict]:
     return [
         {
-            "type": st.session_state.get(f"nf_et_{rid}", "Takeoff"),
-            "qty":  int(st.session_state.get(f"nf_eq_{rid}", 1)),
+            "type":   st.session_state.get(f"nf_et_{rid}", "Takeoff"),
+            "period": st.session_state.get(f"nf_ep_{rid}", "Day"),
+            "qty":    int(st.session_state.get(f"nf_eq_{rid}", 1)),
+            "method": st.session_state.get(f"nf_em_{rid}", "Manual"),
         }
         for rid in st.session_state.nf_events
     ]
 
 
+def _manual_minutes(start_t: time, end_t: time) -> int:
+    """Return minutes between start and end (0 if equal; handles overnight)."""
+    if start_t == end_t:
+        return 0
+    s = datetime.combine(date.today(), start_t)
+    e = datetime.combine(date.today(), end_t)
+    if e < s:
+        e += timedelta(days=1)
+    return int((e - s).total_seconds() / 60)
+
+
+# ── Main render ────────────────────────────────────────────────────────────────
+
 def render():
     _init_state()
 
+    # One-cycle green success flash
+    if st.session_state.pop("nf_save_success", False):
+        st.success("✅ Flight saved successfully!")
+
+    user_id      = st.session_state.user["id"]
     primary_role = st.session_state.get("primary_role", "IP")
     sheet_url    = st.session_state.get("sheet_url", "")
     v            = st.session_state.nf_version
@@ -56,11 +89,10 @@ def render():
 
     st.header("✈️ New Flight Log")
 
-    # ── Mode ─────────────────────────────────────────────────────────────────
-    if primary_role == "Dual":
-        # Dual: checkbox per flight to choose IP or EP
+    # ── Mode toggle (BOTH role only) ───────────────────────────────────────────
+    if primary_role == "BOTH":
         use_ep   = st.checkbox(
-            "EP Mode — duration calculated from events (qty × 15 min)",
+            "EP Mode — duration from events (qty × 15 min)",
             key=f"nf_ep_mode_{v}",
         )
         log_type = "EP" if use_ep else "IP"
@@ -68,45 +100,149 @@ def render():
         use_ep   = (primary_role == "EP")
         log_type = primary_role
 
-    # ── Core flight info ─────────────────────────────────────────────────────
+    # ── Core flight fields ─────────────────────────────────────────────────────
     with st.container(border=True):
         st.markdown(f"**Log Type: {log_type}**")
 
         flight_date = st.date_input(
             "Date", value=date.today(), key=f"nf_date_{v}", format="DD/MM/YYYY"
         )
-        pilot_role = st.selectbox("Pilot Role", PILOT_ROLES, key=f"nf_role_{v}")
 
-        if not use_ep:
-            # IP mode — manual start / end time entry
-            c1, c2 = st.columns(2)
-            start_t = c1.time_input("Start Time", value=time(9, 0),  step=900, key=f"nf_start_{v}")
-            end_t   = c2.time_input("End Time",   value=time(10, 0), step=900, key=f"nf_end_{v}")
+        # Aircraft
+        aircraft_list = get_aircraft(user_id)
+        if not aircraft_list:
+            st.warning("No aircraft found. Add one in **Settings** first.")
+            return
 
-            start_dt = datetime.combine(date.today(), start_t)
-            end_dt   = datetime.combine(date.today(), end_t)
-            if end_dt <= start_dt:
-                end_dt += timedelta(days=1)
-            duration_minutes = int((end_dt - start_dt).total_seconds() / 60)
-            h, m = divmod(duration_minutes, 60)
-            st.caption(f"Duration: {h}h {m:02d}m")
+        ac_labels = [
+            f"{a['model_type']} — {a['tail_number']}"
+            + (f"  ({a['call_sign']})" if a["call_sign"] else "")
+            for a in aircraft_list
+        ]
+        pref_ac_id  = st.session_state.get("default_aircraft_id", "")
+        pref_ac_idx = 0
+        if pref_ac_id:
+            for i, a in enumerate(aircraft_list):
+                if str(a["id"]) == str(pref_ac_id):
+                    pref_ac_idx = i
+                    break
+
+        sel_ac_label      = st.selectbox("Aircraft", ac_labels, index=pref_ac_idx, key=f"nf_ac_{v}")
+        selected_aircraft = aircraft_list[ac_labels.index(sel_ac_label)]
+
+        # Tail Number + Call Sign (pre-populated from aircraft, editable)
+        ct, cc = st.columns(2)
+        tail_number = ct.text_input(
+            "Tail Number",
+            value=selected_aircraft.get("tail_number", ""),
+            key=f"nf_tail_{v}",
+        )
+        call_sign = cc.text_input(
+            "Call Sign",
+            value=selected_aircraft.get("call_sign", "") or "",
+            key=f"nf_cs_{v}",
+        )
+
+        # Site
+        sites_list         = get_sites(user_id)
+        custom_suggestions = get_custom_site_suggestions(user_id)
+        site_names         = [s["name"] for s in sites_list]
+        site_opts          = site_names + ["Other / Custom Location"]
+        sel_site           = st.selectbox("Site", site_opts, key=f"nf_site_{v}")
+
+        if sel_site == "Other / Custom Location":
+            site_id = None
+            if custom_suggestions:
+                prev = st.selectbox(
+                    "Previous custom location",
+                    [""] + custom_suggestions + ["Type new…"],
+                    key=f"nf_site_prev_{v}",
+                )
+                if prev and prev != "Type new…":
+                    custom_loc = prev
+                else:
+                    custom_loc = st.text_input(
+                        "Location name", placeholder="e.g. Haifa Industrial Zone",
+                        key=f"nf_site_txt_{v}",
+                    )
+            else:
+                custom_loc = st.text_input(
+                    "Location name", placeholder="e.g. Haifa Industrial Zone",
+                    key=f"nf_site_txt_{v}",
+                )
         else:
-            duration_minutes = 0  # recalculated from events after this block
+            match      = next((s for s in sites_list if s["name"] == sel_site), None)
+            site_id    = match["id"] if match else None
+            custom_loc = ""
 
-    # ── Events ───────────────────────────────────────────────────────────────
+        # Mission Type | GCS Type | Control Mode
+        cm, cg, cem = st.columns(3)
+        mission_purpose = cm.selectbox("Mission Type", MISSION_PURPOSES, key=f"nf_mission_{v}")
+
+        gcs_list  = get_gcs_types(user_id)
+        gcs_names = [g["name"] for g in gcs_list]
+        if gcs_names:
+            gcs_opts = gcs_names + ["Other (free text)"]
+            sel_gcs  = cg.selectbox("GCS Type", gcs_opts, key=f"nf_gcs_{v}")
+            gcs_text = (
+                st.text_input("GCS Type (custom)", key=f"nf_gcs_txt_{v}")
+                if sel_gcs == "Other (free text)"
+                else sel_gcs
+            )
+        else:
+            gcs_text = cg.text_input(
+                "GCS Type", placeholder="e.g. DJI Smart Controller", key=f"nf_gcs_txt_{v}"
+            )
+
+        control_mode = cem.selectbox("Control Mode", ["Manual", "Automatic"], key=f"nf_ctrl_mode_{v}")
+
+        # Crew Role + Instructor
+        c_r, c_i      = st.columns(2)
+        pilot_role    = c_r.selectbox("Pilot Role", CREW_ROLES, key=f"nf_role_{v}")
+        is_instructor = c_i.checkbox("Instructor", key=f"nf_instructor_{v}")
+
+        # Start / End time — always visible for both IP and EP
+        c1, c2  = st.columns(2)
+        start_t = c1.time_input("Start Time", value=time(9, 0), step=900, key=f"nf_start_{v}")
+
+        if use_ep:
+            # EP default: same time → 0 manual override
+            end_t   = c2.time_input("End Time", value=time(9, 0), step=900, key=f"nf_end_{v}")
+            man_min = _manual_minutes(start_t, end_t)
+            if man_min > 0:
+                st.caption("⏱ Manual time override active — added on top of events total.")
+            else:
+                st.caption("💡 Keep Start = End for events-only time. Set End later to add manual time.")
+        else:
+            # IP: default end same as start; user sets manually
+            end_t    = c2.time_input("End Time", value=time(9, 0), step=900, key=f"nf_end_{v}")
+            man_min  = _manual_minutes(start_t, end_t)
+            h, m     = divmod(man_min, 60)
+            st.caption(f"Duration: {h}h {m:02d}m")
+            duration_minutes = man_min
+
+    # ── Events table ──────────────────────────────────────────────────────────
     st.subheader("Events")
-    ep_note = " — each qty × 15 min added to duration" if use_ep else " (optional)"
+    ep_note = f" — each qty × {_MINS_PER_EVENT} min" if use_ep else " (optional)"
     with st.container(border=True):
-        st.caption(f"Add flight events{ep_note}.")
+        st.caption(f"Flight events{ep_note}.")
+
+        if st.session_state.nf_events:
+            hc = st.columns([2, 2, 1, 2, 0.6])
+            hc[0].markdown("**Type**");  hc[1].markdown("**Day / Night**")
+            hc[2].markdown("**Qty**");   hc[3].markdown("**Manual / Auto**")
+            hc[4].markdown("**Del**")
 
         rows_to_remove = []
         for rid in st.session_state.nf_events:
-            with st.container(border=True):
-                c1, c2, c3 = st.columns([2, 1, 1])
-                c1.selectbox("Event Type", EVENT_TYPES, key=f"nf_et_{rid}")
-                c2.number_input("Qty", min_value=1, max_value=99, value=1, key=f"nf_eq_{rid}")
-                if c3.button("✕", key=f"nf_del_{rid}", use_container_width=True):
-                    rows_to_remove.append(rid)
+            rc = st.columns([2, 2, 1, 2, 0.6])
+            rc[0].selectbox("", EVENT_TYPES, key=f"nf_et_{rid}", label_visibility="collapsed")
+            rc[1].selectbox("", PERIODS,     key=f"nf_ep_{rid}", label_visibility="collapsed")
+            rc[2].number_input("", min_value=1, max_value=99, value=1,
+                               key=f"nf_eq_{rid}", label_visibility="collapsed")
+            rc[3].selectbox("", METHODS,     key=f"nf_em_{rid}", label_visibility="collapsed")
+            if rc[4].button("✕", key=f"nf_del_{rid}", use_container_width=True):
+                rows_to_remove.append(rid)
 
         for rid in rows_to_remove:
             st.session_state.nf_events.remove(rid)
@@ -119,49 +255,120 @@ def render():
 
     events = _collect_events()
 
-    # EP: calculate and display duration from events
+    # ── EP duration summary (after events so totals are known) ────────────────
     if use_ep:
-        duration_minutes = calculate_ep_duration(events)
-        h, m = divmod(duration_minutes, 60)
-        st.info(f"Calculated Duration: {h}h {m:02d}m ({duration_minutes} min total)")
+        events_min       = calculate_ep_duration(events)
+        man_min          = _manual_minutes(start_t, end_t)
+        duration_minutes = events_min + man_min
+        h, m             = divmod(duration_minutes, 60)
 
-    # ── Comments ─────────────────────────────────────────────────────────────
+        if man_min > 0:
+            h_e, m_e = divmod(events_min, 60)
+            h_m, m_m = divmod(man_min, 60)
+            st.info(
+                f"**{h}h {m:02d}m** total  —  "
+                f"Events {h_e}h {m_e:02d}m  +  Manual {h_m}h {m_m:02d}m"
+            )
+        else:
+            st.info(f"**{h}h {m:02d}m**  ({len(events)} event(s) × {_MINS_PER_EVENT} min)")
+
+    # ── Comments ──────────────────────────────────────────────────────────────
     comments = st.text_area("Comments (optional)", height=80, key=f"nf_comments_{v}")
 
-    # ── Save ─────────────────────────────────────────────────────────────────
+    # ── Save ──────────────────────────────────────────────────────────────────
     st.divider()
     if st.button("💾  Save Flight Log", use_container_width=True, type="primary"):
+
         if not sheet_url:
-            st.error("No Google Sheet URL configured. Please run the app setup again.")
+            st.error("No Google Sheet URL configured. Set it up in ⚙️ Settings first.")
             st.stop()
 
-        if use_ep and not events:
-            st.error("EP mode requires at least one event to calculate duration.")
-            st.stop()
-
-        # Final duration (EP recalculates in case events changed after display)
+        # Final duration (re-evaluate widget state at save time)
         if use_ep:
-            duration_minutes = calculate_ep_duration(events)
+            events_min_final = calculate_ep_duration(events)
+            man_min_final    = _manual_minutes(start_t, end_t)
+            duration_minutes = events_min_final + man_min_final
+            if duration_minutes == 0:
+                st.error("Total duration is 0. Add events or set End time later than Start.")
+                st.stop()
+            if duration_minutes >= 24 * 60:
+                st.error("Duration exceeds 24 h. Check quantities or time values.")
+                st.stop()
+            h_ep, m_ep = divmod(duration_minutes, 60)
+            db_start   = "00:00"
+            db_end     = f"{h_ep:02d}:{m_ep:02d}"
+        else:
+            duration_minutes = _manual_minutes(start_t, end_t)
+            if duration_minutes <= 0:
+                st.error("End time must be after Start time.")
+                st.stop()
+            db_start = start_t.strftime("%H:%M")
+            db_end   = end_t.strftime("%H:%M")
 
-        h, m       = divmod(duration_minutes, 60)
-        dur_str    = f"{h}h {m:02d}m"
-        events_str = ", ".join(f"{e['type']} ×{e['qty']}" for e in events) if events else ""
+        event_data = aggregate_event_rows(events)
 
-        ok, msg = append_flight_to_gsheet(
-            sheet_url=sheet_url,
+        # 1 — Save to SQLite
+        ok_db, msg_db = add_flight_log(
+            user_id         = user_id,
+            aircraft_id     = selected_aircraft["id"],
+            date            = flight_date.strftime("%Y-%m-%d"),
+            start_time      = db_start,
+            end_time        = db_end,
+            mission_purpose = mission_purpose,
+            crew_role       = pilot_role,
+            is_instructor   = is_instructor,
+            gcs_type        = gcs_text,
+            site_id         = site_id,
+            site_custom     = custom_loc,
+            comments        = comments.strip(),
+            **event_data,
+        )
+        if not ok_db:
+            st.error(f"Save failed: {msg_db}")
+            st.stop()
+
+        # 2 — Append to Google Sheets
+        h_gs, m_gs = divmod(duration_minutes, 60)
+        dur_str    = f"{h_gs}h {m_gs:02d}m"
+
+        day_events = (
+            event_data.get("takeoffs_day_manual",  0) + event_data.get("takeoffs_day_auto",    0)
+          + event_data.get("landings_day_manual",   0) + event_data.get("landings_day_auto",     0)
+        )
+        night_events = (
+            event_data.get("takeoffs_night_manual", 0) + event_data.get("takeoffs_night_auto",   0)
+          + event_data.get("landings_night_manual",  0) + event_data.get("landings_night_auto",    0)
+        )
+        approach_count = (
+            event_data.get("approaches_day_manual",   0) + event_data.get("approaches_day_auto",    0)
+          + event_data.get("approaches_night_manual",  0) + event_data.get("approaches_night_auto",   0)
+        )
+
+        ok_gs, msg_gs = append_flight_to_gsheet(
+            script_url=sheet_url,
             row={
-                "date":       flight_date.strftime("%Y-%m-%d"),
-                "pilot_role": pilot_role,
-                "log_type":   log_type,
-                "duration":   dur_str,
-                "events":     events_str,
-                "comments":   comments.strip(),
+                "date":           flight_date.strftime("%Y-%m-%d"),
+                "pilot_name":     st.session_state.get("display_name", ""),
+                "aircraft_type":  selected_aircraft["model_type"],
+                "tail_number":    tail_number,
+                "call_sign":      call_sign,
+                "role":           pilot_role,
+                "log_type":       log_type,
+                "mission_type":   mission_purpose,
+                "control_mode":   control_mode,
+                "approach_count": approach_count,
+                "instructor":     "Yes" if is_instructor else "No",
+                "duration":       dur_str,
+                "day_events":     day_events,
+                "night_events":   night_events,
+                "comments":       comments.strip(),
             },
         )
 
-        if ok:
-            st.success(msg)
-            _clear_form()
-            st.rerun()
-        else:
-            st.error(msg)
+        if not ok_gs:
+            st.warning(f"Saved locally. Google Sheets sync failed: {msg_gs}")
+
+        # Green checkmark for one render cycle, then clear form
+        st.session_state["nf_save_success"] = True
+        _clear_form()
+        st.rerun()
