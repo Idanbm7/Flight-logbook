@@ -5,6 +5,11 @@ IP mode   : manual Start/End times; duration = end − start.
 EP mode   : events × 15 min each; if Start ≠ End the manual gap is ADDED on top.
 BOTH mode : toggle at top to choose IP or EP per flight.
 
+Aircraft selection uses three independent session_state-bound text fields plus a
+separate "Auto-Fill from Saved Aircraft" selectbox.  The on_change callback
+force-writes all three fields directly to session_state so they refresh
+immediately when a different aircraft is chosen — eliminating the stale-data bug.
+
 Saves to SQLite first, then POSTs to Google Sheets (Apps Script Web App).
 """
 
@@ -12,7 +17,9 @@ import streamlit as st
 from datetime import date, time, datetime, timedelta
 
 from database import (
-    add_flight_log, get_aircraft, add_aircraft, get_gcs_types, get_sites,
+    add_flight_log, get_aircraft, add_aircraft,
+    get_aircraft_display_list,
+    get_gcs_types, get_sites,
     get_custom_site_suggestions,
 )
 from utils import (
@@ -22,18 +29,61 @@ from utils import (
 )
 
 _MINS_PER_EVENT = 15
+_AC_NONE        = "(none — type manually below)"
+
+
+# ── Aircraft display label ─────────────────────────────────────────────────────
+
+def _ac_label(a: dict) -> str:
+    model = (a.get("model_type", "") or "").strip()
+    tail  = (a.get("tail_number", "") or "").strip() or "—"
+    cs    = (a.get("call_sign",   "") or "").strip() or "—"
+    return f"{model} - {tail} - {cs}"
+
+
+# ── Auto-fill on_change callback ───────────────────────────────────────────────
+# Must be defined at module level so Streamlit can reference the same object
+# across renders.  Reads the dropdown value and force-writes the three aircraft
+# fields to session_state; the next render picks up the new values automatically.
+
+def _autofill_cb():
+    label   = st.session_state.get("nf_autofill_ac", _AC_NONE)
+    ac_list = st.session_state.get("_nf_ac_cache", [])
+
+    if label == _AC_NONE or not label:
+        st.session_state["nf_aircraft_model"] = ""
+        st.session_state["nf_tail_number"]    = ""
+        st.session_state["nf_call_sign"]      = ""
+        st.session_state["nf_selected_ac_id"] = None
+        return
+
+    labels = [_ac_label(a) for a in ac_list]
+    if label not in labels:
+        return
+
+    a = ac_list[labels.index(label)]
+    st.session_state["nf_aircraft_model"] = (a.get("model_type", "") or "").strip()
+    st.session_state["nf_tail_number"]    = (a.get("tail_number", "") or "").strip()
+    st.session_state["nf_call_sign"]      = (a.get("call_sign",   "") or "").strip()
+    st.session_state["nf_selected_ac_id"] = a.get("id")
 
 
 # ── State helpers ──────────────────────────────────────────────────────────────
 
 def _init_state():
-    for key, default in [
-        ("nf_version",   0),
-        ("nf_events",    []),
-        ("nf_event_ctr", 0),
-    ]:
+    defaults = [
+        ("nf_version",        0),
+        ("nf_events",         []),
+        ("nf_event_ctr",      0),
+        ("nf_autofill_ac",    _AC_NONE),
+        ("nf_aircraft_model", ""),
+        ("nf_tail_number",    ""),
+        ("nf_call_sign",      ""),
+        ("nf_selected_ac_id", None),
+    ]
+    for key, val in defaults:
         if key not in st.session_state:
-            st.session_state[key] = default
+            st.session_state[key] = val
 
 
 def _clear_form():
@@ -41,9 +91,14 @@ def _clear_form():
     for k in list(st.session_state.keys()):
         if k.startswith(("nf_et_", "nf_ep_", "nf_eq_", "nf_em_")):
             del st.session_state[k]
-    st.session_state.nf_version   = v
-    st.session_state.nf_events    = []
-    st.session_state.nf_event_ctr = 0
+    st.session_state.nf_version              = v
+    st.session_state.nf_events               = []
+    st.session_state.nf_event_ctr            = 0
+    st.session_state["nf_autofill_ac"]       = _AC_NONE
+    st.session_state["nf_aircraft_model"]    = ""
+    st.session_state["nf_tail_number"]       = ""
+    st.session_state["nf_call_sign"]         = ""
+    st.session_state["nf_selected_ac_id"]    = None
 
 
 def _collect_events() -> list[dict]:
@@ -59,7 +114,6 @@ def _collect_events() -> list[dict]:
 
 
 def _manual_minutes(start_t: time, end_t: time) -> int:
-    """Return minutes between start and end (0 if equal; handles overnight)."""
     if start_t == end_t:
         return 0
     s = datetime.combine(date.today(), start_t)
@@ -69,12 +123,23 @@ def _manual_minutes(start_t: time, end_t: time) -> int:
     return int((e - s).total_seconds() / 60)
 
 
+def _derive_control_mode(events: list[dict]) -> str:
+    """Return Manual / Automatic / Mixed derived from the event method toggles."""
+    if not events:
+        return "Manual"
+    methods = {e.get("method", "Manual") for e in events}
+    if methods == {"Automatic"}:
+        return "Automatic"
+    if methods == {"Manual"}:
+        return "Manual"
+    return "Mixed"
+
+
 # ── Main render ────────────────────────────────────────────────────────────────
 
 def render():
     _init_state()
 
-    # One-cycle green success flash
     if st.session_state.pop("nf_save_success", False):
         st.success("✅ Flight saved successfully!")
 
@@ -108,48 +173,29 @@ def render():
             "Date", value=date.today(), key=f"nf_date_{v}", format="DD/MM/YYYY"
         )
 
-        # Aircraft — saved list + free-text option
-        aircraft_list = get_aircraft(user_id)
-        _NEW_AC_OPTION = "✏️ Type new aircraft..."
-        ac_saved_labels = [
-            f"{a['model_type']} — {a['tail_number']}"
-            + (f"  ({a['call_sign']})" if a["call_sign"] else "")
-            for a in aircraft_list
-        ]
-        ac_opts = [_NEW_AC_OPTION] + ac_saved_labels
+        # ── Aircraft ───────────────────────────────────────────────────────────
+        # Load deduplicated list; cache it so the callback can look up records.
+        ac_list = get_aircraft_display_list(user_id)
+        st.session_state["_nf_ac_cache"] = ac_list
+        ac_labels = [_ac_label(a) for a in ac_list]
 
-        sel_ac_label = st.selectbox("Aircraft", ac_opts, index=0, key=f"nf_ac_{v}")
-
-        if sel_ac_label == _NEW_AC_OPTION:
-            free_model_type   = st.text_input(
-                "Aircraft Model / Type",
-                placeholder="e.g. DJI Matrice 300",
-                key=f"nf_ac_free_{v}",
-            )
-            selected_aircraft = None
-            default_tail      = ""
-            default_cs        = ""
-        else:
-            idx               = ac_saved_labels.index(sel_ac_label)
-            selected_aircraft = aircraft_list[idx]
-            free_model_type   = selected_aircraft["model_type"]
-            default_tail      = selected_aircraft.get("tail_number", "")
-            default_cs        = selected_aircraft.get("call_sign", "") or ""
-
-        # Tail Number + Call Sign — empty by default, auto-filled from saved aircraft
-        ct, cc = st.columns(2)
-        tail_number = ct.text_input(
-            "Tail Number",
-            value=default_tail,
-            key=f"nf_tail_{v}",
-        )
-        call_sign = cc.text_input(
-            "Call Sign",
-            value=default_cs,
-            key=f"nf_cs_{v}",
+        st.selectbox(
+            "Auto-Fill from Saved Aircraft",
+            options=[_AC_NONE] + ac_labels,
+            key="nf_autofill_ac",
+            on_change=_autofill_cb,
+            help="Selecting here force-fills the three fields below.",
         )
 
-        # Site
+        # Field A — bound to session_state; callback writes here directly
+        st.text_input("Aircraft Model", key="nf_aircraft_model", placeholder="e.g. Heron 1")
+
+        # Fields B & C
+        _ct, _cc = st.columns(2)
+        _ct.text_input("Tail Number", key="nf_tail_number", placeholder="e.g. 279")
+        _cc.text_input("Call Sign",   key="nf_call_sign",   placeholder="e.g. UMD")
+
+        # ── Site ────────────────────────────────────────────────────────────────
         sites_list         = get_sites(user_id)
         custom_suggestions = get_custom_site_suggestions(user_id)
         site_names         = [s["name"] for s in sites_list]
@@ -181,8 +227,8 @@ def render():
             site_id    = match["id"] if match else None
             custom_loc = ""
 
-        # Mission Type | GCS Type | Control Mode
-        cm, cg, cem = st.columns(3)
+        # ── Mission Type | GCS Type ────────────────────────────────────────────
+        cm, cg = st.columns(2)
         mission_purpose = cm.selectbox("Mission Type", MISSION_PURPOSES, key=f"nf_mission_{v}")
 
         gcs_list  = get_gcs_types(user_id)
@@ -200,30 +246,27 @@ def render():
                 "GCS Type", placeholder="e.g. DJI Smart Controller", key=f"nf_gcs_txt_{v}"
             )
 
-        control_mode = cem.selectbox("Control Mode", ["Manual", "Automatic"], key=f"nf_ctrl_mode_{v}")
-
-        # Crew Role + Instructor
+        # ── Crew Role | Instructor ────────────────────────────────────────────
         c_r, c_i      = st.columns(2)
         pilot_role    = c_r.selectbox("Pilot Role", CREW_ROLES, key=f"nf_role_{v}")
         is_instructor = c_i.checkbox("Instructor", key=f"nf_instructor_{v}")
 
-        # Start / End time — always visible for both IP and EP
+        # ── Start / End time ──────────────────────────────────────────────────
         c1, c2  = st.columns(2)
         start_t = c1.time_input("Start Time", value=time(9, 0), step=900, key=f"nf_start_{v}")
 
         if use_ep:
-            # EP default: same time → 0 manual override
             end_t   = c2.time_input("End Time", value=time(9, 0), step=900, key=f"nf_end_{v}")
             man_min = _manual_minutes(start_t, end_t)
-            if man_min > 0:
-                st.caption("⏱ Manual time override active — added on top of events total.")
-            else:
-                st.caption("💡 Keep Start = End for events-only time. Set End later to add manual time.")
+            st.caption(
+                "⏱ Manual time override active — added on top of events total."
+                if man_min > 0 else
+                "💡 Keep Start = End for events-only time. Set End later to add manual time."
+            )
         else:
-            # IP: default end same as start; user sets manually
-            end_t    = c2.time_input("End Time", value=time(9, 0), step=900, key=f"nf_end_{v}")
-            man_min  = _manual_minutes(start_t, end_t)
-            h, m     = divmod(man_min, 60)
+            end_t   = c2.time_input("End Time", value=time(9, 0), step=900, key=f"nf_end_{v}")
+            man_min = _manual_minutes(start_t, end_t)
+            h, m    = divmod(man_min, 60)
             st.caption(f"Duration: {h}h {m:02d}m")
             duration_minutes = man_min
 
@@ -261,13 +304,12 @@ def render():
 
     events = _collect_events()
 
-    # ── EP duration summary (after events so totals are known) ────────────────
+    # ── EP duration summary ────────────────────────────────────────────────────
     if use_ep:
         events_min       = calculate_ep_duration(events)
         man_min          = _manual_minutes(start_t, end_t)
         duration_minutes = events_min + man_min
         h, m             = divmod(duration_minutes, 60)
-
         if man_min > 0:
             h_e, m_e = divmod(events_min, 60)
             h_m, m_m = divmod(man_min, 60)
@@ -289,25 +331,37 @@ def render():
             st.error("No Google Sheet URL configured. Set it up in ⚙️ Settings first.")
             st.stop()
 
-        # Resolve aircraft — auto-create if free-text entry
-        if selected_aircraft is None:
-            if not free_model_type.strip():
-                st.error("Please enter an Aircraft Model / Type.")
-                st.stop()
-            ok_ac, msg_ac = add_aircraft(user_id, free_model_type.strip(), tail_number.strip(), call_sign.strip())
+        # Read aircraft from session_state — single source of truth
+        aircraft_model = st.session_state.get("nf_aircraft_model", "").strip()
+        tail_number    = st.session_state.get("nf_tail_number",    "").strip()
+        call_sign      = st.session_state.get("nf_call_sign",      "").strip()
+        selected_ac_id = st.session_state.get("nf_selected_ac_id")
+
+        if not aircraft_model:
+            st.error("Aircraft Model is required.")
+            st.stop()
+
+        # Resolve to a DB record — verify saved ID is still valid, else create
+        aircraft_record = None
+        if selected_ac_id:
+            aircraft_record = next(
+                (a for a in get_aircraft(user_id) if a["id"] == selected_ac_id), None
+            )
+
+        if not aircraft_record:
+            ok_ac, msg_ac = add_aircraft(user_id, aircraft_model, tail_number, call_sign)
             if not ok_ac:
                 st.error(f"Could not save aircraft: {msg_ac}")
                 st.stop()
             refreshed = get_aircraft(user_id)
-            selected_aircraft = next(
-                (a for a in reversed(refreshed) if a["model_type"] == free_model_type.strip()),
-                None,
+            aircraft_record = next(
+                (a for a in reversed(refreshed) if a["model_type"] == aircraft_model), None
             )
-            if not selected_aircraft:
+            if not aircraft_record:
                 st.error("Failed to retrieve aircraft after creation.")
                 st.stop()
 
-        # Final duration (re-evaluate widget state at save time)
+        # Duration
         if use_ep:
             events_min_final = calculate_ep_duration(events)
             man_min_final    = _manual_minutes(start_t, end_t)
@@ -334,7 +388,7 @@ def render():
         # 1 — Save to SQLite
         ok_db, msg_db = add_flight_log(
             user_id         = user_id,
-            aircraft_id     = selected_aircraft["id"],
+            aircraft_id     = aircraft_record["id"],
             date            = flight_date.strftime("%Y-%m-%d"),
             start_time      = db_start,
             end_time        = db_end,
@@ -356,43 +410,45 @@ def render():
         dur_str    = f"{h_gs}h {m_gs:02d}m"
 
         day_events = (
-            event_data.get("takeoffs_day_manual",  0) + event_data.get("takeoffs_day_auto",    0)
-          + event_data.get("landings_day_manual",   0) + event_data.get("landings_day_auto",     0)
+            event_data.get("takeoffs_day_manual",  0) + event_data.get("takeoffs_day_auto",  0)
+          + event_data.get("landings_day_manual",   0) + event_data.get("landings_day_auto",  0)
         )
         night_events = (
-            event_data.get("takeoffs_night_manual", 0) + event_data.get("takeoffs_night_auto",   0)
-          + event_data.get("landings_night_manual",  0) + event_data.get("landings_night_auto",    0)
+            event_data.get("takeoffs_night_manual", 0) + event_data.get("takeoffs_night_auto", 0)
+          + event_data.get("landings_night_manual",  0) + event_data.get("landings_night_auto", 0)
         )
-        approach_count = (
-            event_data.get("approaches_day_manual",   0) + event_data.get("approaches_day_auto",    0)
-          + event_data.get("approaches_night_manual",  0) + event_data.get("approaches_night_auto",   0)
+        day_approaches = (
+            event_data.get("approaches_day_manual",  0) + event_data.get("approaches_day_auto",  0)
+        )
+        night_approaches = (
+            event_data.get("approaches_night_manual", 0) + event_data.get("approaches_night_auto", 0)
         )
 
         ok_gs, msg_gs = append_flight_to_gsheet(
             script_url=sheet_url,
             row={
-                "date":           flight_date.strftime("%Y-%m-%d"),
-                "pilot_name":     st.session_state.get("display_name", ""),
-                "aircraft_type":  selected_aircraft["model_type"],
-                "tail_number":    tail_number,
-                "call_sign":      call_sign,
-                "role":           pilot_role,
-                "log_type":       log_type,
-                "mission_type":   mission_purpose,
-                "control_mode":   control_mode,
-                "approach_count": approach_count,
-                "instructor":     "Yes" if is_instructor else "No",
-                "duration":       dur_str,
-                "day_events":     day_events,
-                "night_events":   night_events,
-                "comments":       comments.strip(),
+                "date":             flight_date.strftime("%Y-%m-%d"),
+                "pilot_name":       st.session_state.get("display_name", ""),
+                "aircraft_type":    aircraft_model,
+                "tail_number":      tail_number,
+                "call_sign":        call_sign,
+                "role":             pilot_role,
+                "log_type":         log_type,
+                "mission_type":     mission_purpose,
+                "control_mode":     _derive_control_mode(events),
+                "day_approaches":   day_approaches,
+                "night_approaches": night_approaches,
+                "instructor":       "Yes" if is_instructor else "No",
+                "duration":         dur_str,
+                "day_events":       day_events,
+                "night_events":     night_events,
+                "comments":         comments.strip(),
             },
         )
 
         if not ok_gs:
             st.warning(f"Saved locally. Google Sheets sync failed: {msg_gs}")
 
-        # Green checkmark for one render cycle, then clear form
         st.session_state["nf_save_success"] = True
         _clear_form()
         st.rerun()

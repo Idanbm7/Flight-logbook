@@ -3,10 +3,11 @@ utils.py — Shared helpers: time formatting, event aggregation, Google Sheets, 
 
 Google Sheets integration uses an Apps Script Web App URL — doPost only, never GET.
 
-Sheet schema (15 columns, no Status column):
+Sheet schema (16 columns):
   1 Date | 2 Pilot_Name | 3 Aircraft_Type | 4 Tail_Number | 5 Call_Sign |
-  6 Role | 7 Log_Type | 8 Mission_Type | 9 Control_Mode | 10 Approach_count |
-  11 Instructor | 12 Duration | 13 Day_Events | 14 Night_Events | 15 Comments
+  6 Role | 7 Log_Type | 8 Mission_Type | 9 Control_Mode | 10 Day_Approach |
+  11 Night_Approach | 12 Instructor | 13 Duration | 14 Day_Events |
+  15 Night_Events | 16 Comments
 """
 
 import os
@@ -269,17 +270,19 @@ def calculate_ep_duration(events: list[dict]) -> int:
 # ---------------------------------------------------------------------------
 # Google Sheets — Apps Script Web App (doPost only, never GET)
 #
-# 15-column schema (no Status column):
+# 16-column schema:
 #   Col  1  Date          Col  2  Pilot_Name     Col  3  Aircraft_Type
 #   Col  4  Tail_Number   Col  5  Call_Sign       Col  6  Role
 #   Col  7  Log_Type      Col  8  Mission_Type    Col  9  Control_Mode
-#   Col 10  Approach_count Col 11 Instructor      Col 12  Duration
-#   Col 13  Day_Events    Col 14  Night_Events    Col 15  Comments
+#   Col 10  Day_Approach  Col 11  Night_Approach  Col 12  Instructor
+#   Col 13  Duration      Col 14  Day_Events      Col 15  Night_Events
+#   Col 16  Comments
 # ---------------------------------------------------------------------------
 
 GSHEET_COLUMNS = [
     "Date", "Pilot_Name", "Aircraft_Type", "Tail_Number", "Call_Sign",
-    "Role", "Log_Type", "Mission_Type", "Control_Mode", "Approach_count",
+    "Role", "Log_Type", "Mission_Type", "Control_Mode",
+    "Day_Approach", "Night_Approach",
     "Instructor", "Duration", "Day_Events", "Night_Events", "Comments",
 ]
 
@@ -298,7 +301,7 @@ def _get_requests():
 
 
 def append_flight_to_gsheet(script_url: str, row: dict) -> tuple[bool, str]:
-    """POST a new flight row. Field order matches the 15-column sheet schema exactly."""
+    """POST a new flight row. Field order matches the 16-column sheet schema exactly."""
     try:
         url = (script_url or "").strip()
         if not url:
@@ -307,23 +310,24 @@ def append_flight_to_gsheet(script_url: str, row: dict) -> tuple[bool, str]:
         _req = _get_requests()
 
         payload = {
-            "action":         "append",
-            # --- columns 1-15 in sheet order ---
-            "Date":           row.get("date", ""),
-            "Pilot_Name":     row.get("pilot_name", ""),
-            "Aircraft_Type":  row.get("aircraft_type", ""),
-            "Tail_Number":    row.get("tail_number", ""),
-            "Call_Sign":      row.get("call_sign", ""),
-            "Role":           row.get("role", ""),
-            "Log_Type":       row.get("log_type", ""),
-            "Mission_Type":   row.get("mission_type", ""),
-            "Control_Mode":   row.get("control_mode", "Manual"),
-            "Approach_count": row.get("approach_count", 0),
-            "Instructor":     row.get("instructor", "No"),
-            "Duration":       row.get("duration", ""),
-            "Day_Events":     row.get("day_events", 0),
-            "Night_Events":   row.get("night_events", 0),
-            "Comments":       row.get("comments", ""),
+            "action":          "append",
+            # --- columns 1-16 in sheet order ---
+            "Date":            row.get("date", ""),
+            "Pilot_Name":      row.get("pilot_name", ""),
+            "Aircraft_Type":   row.get("aircraft_type", ""),
+            "Tail_Number":     row.get("tail_number", ""),
+            "Call_Sign":       row.get("call_sign", ""),
+            "Role":            row.get("role", ""),
+            "Log_Type":        row.get("log_type", ""),
+            "Mission_Type":    row.get("mission_type", ""),
+            "Control_Mode":    row.get("control_mode", "Manual"),
+            "Day_Approach":    row.get("day_approaches", 0),
+            "Night_Approach":  row.get("night_approaches", 0),
+            "Instructor":      row.get("instructor", "No"),
+            "Duration":        row.get("duration", ""),
+            "Day_Events":      row.get("day_events", 0),
+            "Night_Events":    row.get("night_events", 0),
+            "Comments":        row.get("comments", ""),
         }
 
         response = _req.post(url, json=payload, timeout=10)

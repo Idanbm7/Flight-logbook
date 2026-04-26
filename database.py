@@ -177,6 +177,27 @@ def get_aircraft(user_id: int, active_only: bool = True) -> list[dict]:
         return []
 
 
+def get_aircraft_display_list(user_id: int) -> list[dict]:
+    """Return active aircraft deduplicated by (model_type, tail_number, call_sign).
+    Uses MIN(id) so a representative DB record is always returned."""
+    try:
+        with get_connection() as conn:
+            rows = conn.execute(
+                """SELECT MIN(id) AS id,
+                          model_type,
+                          tail_number,
+                          COALESCE(call_sign, '') AS call_sign
+                   FROM aircraft
+                   WHERE user_id = ? AND is_active = 1
+                   GROUP BY model_type, tail_number, COALESCE(call_sign, '')
+                   ORDER BY model_type""",
+                (user_id,),
+            ).fetchall()
+        return [dict(r) for r in rows]
+    except Exception:
+        return []
+
+
 def update_aircraft(aircraft_id: int, user_id: int, model_type: str,
                     tail_number: str, call_sign: str = "") -> tuple[bool, str]:
     if not model_type.strip() or not tail_number.strip():

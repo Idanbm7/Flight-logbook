@@ -63,29 +63,57 @@ _APPS_SCRIPT_HELP = """
 4. Click **Deploy**, approve permissions, and copy the **Web app URL**.
 5. Paste that URL in the field below and click **Save Connection Settings**.
 
+> ⚠️ **If you already have a sheet:** clear all rows (keep the sheet), then re-deploy
+> so the new 15-column header is written correctly on the next flight save.
+
+**Sheet columns (15):**
+`Date | Pilot_Name | Aircraft_Type | Tail_Number | Call_Sign | Role | Log_Type | Mission_Type | Day_Approach | Night_Approach | Instructor | Duration | Day_Events | Night_Events | Comments`
+
 ```js
 function doPost(e) {
   try {
     var sheet = SpreadsheetApp.getActiveSpreadsheet().getActiveSheet();
     var data  = JSON.parse(e.postData.contents);
-    // Write header row if the sheet is empty
+
+    // ── DELETE ────────────────────────────────────────────────────────────
+    if (data.action === "delete") {
+      var lastRow = sheet.getLastRow();
+      for (var r = lastRow; r >= 2; r--) {
+        var row = sheet.getRange(r, 1, 1, sheet.getLastColumn()).getValues()[0];
+        if (String(row[0])  === String(data.Date) &&
+            String(row[1])  === String(data.Pilot_Name) &&
+            String(row[11]) === String(data.Duration)) {
+          sheet.deleteRow(r);
+          return ContentService.createTextOutput("OK")
+            .setMimeType(ContentService.MimeType.TEXT);
+        }
+      }
+      return ContentService.createTextOutput("NOT_FOUND")
+        .setMimeType(ContentService.MimeType.TEXT);
+    }
+
+    // ── APPEND ────────────────────────────────────────────────────────────
     if (sheet.getLastRow() === 0) {
       sheet.appendRow([
-        "Date","Pilot_Name","Aircraft_Type","Role","Log_Type",
+        "Date","Pilot_Name","Aircraft_Type","Tail_Number","Call_Sign",
+        "Role","Log_Type","Mission_Type",
+        "Day_Approach","Night_Approach",
         "Instructor","Duration","Day_Events","Night_Events","Comments"
       ]);
     }
     sheet.appendRow([
-      data.Date, data.Pilot_Name, data.Aircraft_Type, data.Role,
-      data.Log_Type, data.Instructor, data.Duration,
+      data.Date, data.Pilot_Name, data.Aircraft_Type,
+      data.Tail_Number, data.Call_Sign,
+      data.Role, data.Log_Type, data.Mission_Type,
+      data.Day_Approach, data.Night_Approach,
+      data.Instructor, data.Duration,
       data.Day_Events, data.Night_Events, data.Comments
     ]);
-    return ContentService
-      .createTextOutput("OK")
+    return ContentService.createTextOutput("OK")
       .setMimeType(ContentService.MimeType.TEXT);
+
   } catch(err) {
-    return ContentService
-      .createTextOutput("Error: " + err.message)
+    return ContentService.createTextOutput("Error: " + err.message)
       .setMimeType(ContentService.MimeType.TEXT);
   }
 }
@@ -174,9 +202,16 @@ def _tab_defaults(user_id: int, localS):
 
     st.divider()
     if st.button("💾  Save Defaults", use_container_width=True, type="primary"):
-        localS.setItem("display_name",        new_name.strip())
-        localS.setItem("default_aircraft_id", new_ac_id)
-        st.session_state["display_name"]        = new_name.strip()
+        name_clean = new_name.strip()
+        # Persist to SQLite (survives restarts) and local storage (best-effort)
+        set_home_display_pref(user_id, "display_name",        name_clean)
+        set_home_display_pref(user_id, "default_aircraft_id", new_ac_id)
+        try:
+            localS.setItem("display_name",        name_clean)
+            localS.setItem("default_aircraft_id", new_ac_id)
+        except Exception:
+            pass
+        st.session_state["display_name"]        = name_clean
         st.session_state["default_aircraft_id"] = new_ac_id
         st.toast("✅ Defaults saved!")
         st.rerun()
