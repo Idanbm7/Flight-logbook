@@ -12,7 +12,7 @@ import streamlit as st
 from datetime import date, time, datetime, timedelta
 
 from database import (
-    add_flight_log, get_aircraft, get_gcs_types, get_sites,
+    add_flight_log, get_aircraft, add_aircraft, get_gcs_types, get_sites,
     get_custom_site_suggestions,
 )
 from utils import (
@@ -108,38 +108,44 @@ def render():
             "Date", value=date.today(), key=f"nf_date_{v}", format="DD/MM/YYYY"
         )
 
-        # Aircraft
+        # Aircraft — saved list + free-text option
         aircraft_list = get_aircraft(user_id)
-        if not aircraft_list:
-            st.warning("No aircraft found. Add one in **Settings** first.")
-            return
-
-        ac_labels = [
+        _NEW_AC_OPTION = "✏️ Type new aircraft..."
+        ac_saved_labels = [
             f"{a['model_type']} — {a['tail_number']}"
             + (f"  ({a['call_sign']})" if a["call_sign"] else "")
             for a in aircraft_list
         ]
-        pref_ac_id  = st.session_state.get("default_aircraft_id", "")
-        pref_ac_idx = 0
-        if pref_ac_id:
-            for i, a in enumerate(aircraft_list):
-                if str(a["id"]) == str(pref_ac_id):
-                    pref_ac_idx = i
-                    break
+        ac_opts = [_NEW_AC_OPTION] + ac_saved_labels
 
-        sel_ac_label      = st.selectbox("Aircraft", ac_labels, index=pref_ac_idx, key=f"nf_ac_{v}")
-        selected_aircraft = aircraft_list[ac_labels.index(sel_ac_label)]
+        sel_ac_label = st.selectbox("Aircraft", ac_opts, index=0, key=f"nf_ac_{v}")
 
-        # Tail Number + Call Sign (pre-populated from aircraft, editable)
+        if sel_ac_label == _NEW_AC_OPTION:
+            free_model_type   = st.text_input(
+                "Aircraft Model / Type",
+                placeholder="e.g. DJI Matrice 300",
+                key=f"nf_ac_free_{v}",
+            )
+            selected_aircraft = None
+            default_tail      = ""
+            default_cs        = ""
+        else:
+            idx               = ac_saved_labels.index(sel_ac_label)
+            selected_aircraft = aircraft_list[idx]
+            free_model_type   = selected_aircraft["model_type"]
+            default_tail      = selected_aircraft.get("tail_number", "")
+            default_cs        = selected_aircraft.get("call_sign", "") or ""
+
+        # Tail Number + Call Sign — empty by default, auto-filled from saved aircraft
         ct, cc = st.columns(2)
         tail_number = ct.text_input(
             "Tail Number",
-            value=selected_aircraft.get("tail_number", ""),
+            value=default_tail,
             key=f"nf_tail_{v}",
         )
         call_sign = cc.text_input(
             "Call Sign",
-            value=selected_aircraft.get("call_sign", "") or "",
+            value=default_cs,
             key=f"nf_cs_{v}",
         )
 
@@ -282,6 +288,24 @@ def render():
         if not sheet_url:
             st.error("No Google Sheet URL configured. Set it up in ⚙️ Settings first.")
             st.stop()
+
+        # Resolve aircraft — auto-create if free-text entry
+        if selected_aircraft is None:
+            if not free_model_type.strip():
+                st.error("Please enter an Aircraft Model / Type.")
+                st.stop()
+            ok_ac, msg_ac = add_aircraft(user_id, free_model_type.strip(), tail_number.strip(), call_sign.strip())
+            if not ok_ac:
+                st.error(f"Could not save aircraft: {msg_ac}")
+                st.stop()
+            refreshed = get_aircraft(user_id)
+            selected_aircraft = next(
+                (a for a in reversed(refreshed) if a["model_type"] == free_model_type.strip()),
+                None,
+            )
+            if not selected_aircraft:
+                st.error("Failed to retrieve aircraft after creation.")
+                st.stop()
 
         # Final duration (re-evaluate widget state at save time)
         if use_ep:

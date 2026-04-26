@@ -93,7 +93,7 @@ function doPost(e) {
 """
 
 
-def _tab_connection(localS):
+def _tab_connection(localS, user_id: int):
     st.subheader("Google Sheets Connection")
     with st.expander("Setup instructions", expanded=False):
         st.markdown(_APPS_SCRIPT_HELP)
@@ -125,7 +125,9 @@ def _tab_connection(localS):
             # Write to session state first so the app works immediately
             st.session_state["sheet_url"]    = url_clean
             st.session_state["primary_role"] = new_role
-            # Persist to local storage (best-effort — never crash on failure)
+            # Persist to SQLite (survives restarts) and local storage (best-effort)
+            set_home_display_pref(user_id, "sheet_url",    url_clean)
+            set_home_display_pref(user_id, "primary_role", new_role)
             try:
                 localS.setItem("sheet_url",    url_clean)
                 localS.setItem("primary_role", new_role)
@@ -236,7 +238,7 @@ def _tab_aircraft(user_id: int):
         with st.expander(label):
             if _is_editing("ac", ac["id"]):
                 new_model = st.text_input("Model / Type *",  value=ac["model_type"], key=f"ac_edit_model_{ac['id']}")
-                new_tail  = st.text_input("Tail Number *",   value=ac["tail_number"], key=f"ac_edit_tail_{ac['id']}")
+                new_tail  = st.text_input("Tail Number",     value=ac["tail_number"], key=f"ac_edit_tail_{ac['id']}")
                 new_cs    = st.text_input("Call Sign",       value=ac["call_sign"] or "", key=f"ac_edit_cs_{ac['id']}")
                 b1, b2    = st.columns(2)
                 if b1.button("💾 Save", key=f"ac_save_{ac['id']}", use_container_width=True):
@@ -285,7 +287,7 @@ def _tab_aircraft(user_id: int):
     with st.form("add_aircraft_form", clear_on_submit=True):
         nc1, nc2, nc3 = st.columns(3)
         model_type  = nc1.text_input("Model / Type *", placeholder="e.g. DJI Matrice 300")
-        tail_number = nc2.text_input("Tail Number *",  placeholder="e.g. 4X-UAV1")
+        tail_number = nc2.text_input("Tail Number",    placeholder="e.g. 4X-UAV1")
         call_sign   = nc3.text_input("Call Sign",      placeholder="e.g. ALPHA")
         if st.form_submit_button("Add Aircraft", use_container_width=True):
             ok, msg = add_aircraft(user_id, model_type, tail_number, call_sign)
@@ -419,7 +421,7 @@ def render():
          "✈️ Aircraft",   "🎮 GCS Types", "📍 Sites"]
     )
 
-    with tab_conn:  _tab_connection(localS)
+    with tab_conn:  _tab_connection(localS, user_id)
     with tab_def:   _tab_defaults(user_id, localS)
     with tab_disp:  _tab_display(user_id)
     with tab_ac:    _tab_aircraft(user_id)

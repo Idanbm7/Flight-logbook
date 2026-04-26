@@ -72,7 +72,21 @@ def render():
     st.write("")  # Spacer
 
     # ── Single-row 3-button navigation ────────────────────────────────────────
-    nav_col1, nav_col2, nav_col3 = st.columns(3)
+    st.markdown(
+        """<style>
+        div[data-testid="stHorizontalBlock"]:has(> div[data-testid="column"]:nth-child(3)) {
+            flex-wrap: nowrap !important;
+            gap: 0.4rem !important;
+        }
+        div[data-testid="stHorizontalBlock"]:has(> div[data-testid="column"]:nth-child(3))
+            > div[data-testid="column"] {
+            min-width: 0 !important;
+            flex: 1 1 0% !important;
+        }
+        </style>""",
+        unsafe_allow_html=True,
+    )
+    nav_col1, nav_col2, nav_col3 = st.columns(3, gap="small")
     with nav_col1:
         if st.button("NEW FLIGHT", use_container_width=True):
             st.session_state.page = "new_flight"

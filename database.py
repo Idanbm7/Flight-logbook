@@ -148,10 +148,10 @@ def authenticate_user(username: str, password: str) -> Optional[dict]:
 # Aircraft CRUD
 # ---------------------------------------------------------------------------
 
-def add_aircraft(user_id: int, model_type: str, tail_number: str,
+def add_aircraft(user_id: int, model_type: str, tail_number: str = "",
                  call_sign: str = "") -> tuple[bool, str]:
-    if not model_type.strip() or not tail_number.strip():
-        return False, "Model/Type and Tail Number are required."
+    if not model_type.strip():
+        return False, "Model/Type is required."
     try:
         with get_connection() as conn:
             conn.execute(
